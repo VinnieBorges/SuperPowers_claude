@@ -193,6 +193,7 @@ already use it in another harness.
 
 **Meta**
 - **writing-skills** - Create new skills following best practices (includes testing methodology)
+- **writing-rules** - Create, edit, test, and validate agent rule files (Cursor .mdc, CLAUDE.md, etc.) using TDD
 - **using-superpowers** - Introduction to the skills system
 
 ## Philosophy
