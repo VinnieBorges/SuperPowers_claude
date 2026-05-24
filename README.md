@@ -208,6 +208,7 @@ The Pi package loads the Superpowers skills and a small extension that injects t
 - **subagent-driven-development** - Fast iteration with two-stage review (spec compliance, then code quality)
 
 **Meta**
+- **retrospective** - End-of-session review to extract and persist improvements
 - **writing-skills** - Create new skills following best practices (includes testing methodology)
 - **using-superpowers** - Introduction to the skills system
 
