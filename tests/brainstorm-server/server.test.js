@@ -45,6 +45,31 @@ async function fetch(url) {
   });
 }
 
+// Like fetch() but lets the caller override the Host header so we can
+// exercise the DNS-rebinding allowlist directly. The TCP target stays
+// 127.0.0.1:PORT; only the HTTP/1.1 Host line is forged.
+async function fetchWithHost(path, hostHeader) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      host: '127.0.0.1',
+      port: TEST_PORT,
+      path,
+      method: 'GET',
+      headers: { Host: hostHeader }
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => resolve({
+        status: res.statusCode,
+        headers: res.headers,
+        body: data
+      }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
 function startServer() {
   return spawn('node', [SERVER_PATH], {
     env: { ...process.env, BRAINSTORM_PORT: TEST_PORT, BRAINSTORM_DIR: TEST_DIR }
@@ -182,6 +207,57 @@ async function runTests() {
     await test('returns 404 for non-root paths', async () => {
       const res = await fetch(`http://localhost:${TEST_PORT}/other`);
       assert.strictEqual(res.status, 404);
+    });
+
+    // ========== Host Header Validation (DNS-rebinding defense) ==========
+    console.log('\n--- Host Header Validation ---');
+
+    await test('accepts requests with Host: localhost:PORT', async () => {
+      const res = await fetchWithHost('/', `localhost:${TEST_PORT}`);
+      assert.strictEqual(res.status, 200);
+    });
+
+    await test('accepts requests with Host: 127.0.0.1:PORT', async () => {
+      const res = await fetchWithHost('/', `127.0.0.1:${TEST_PORT}`);
+      assert.strictEqual(res.status, 200);
+    });
+
+    await test('accepts bare loopback Host without port', async () => {
+      const res = await fetchWithHost('/', 'localhost');
+      assert.strictEqual(res.status, 200);
+    });
+
+    await test('rejects DNS-rebound Host with 421', async () => {
+      const res = await fetchWithHost('/', `evil.example:${TEST_PORT}`);
+      assert.strictEqual(res.status, 421, 'foreign Host should be rejected');
+      assert(!res.body.includes('Waiting for the agent'), 'should not leak screen content');
+    });
+
+    await test('rejects DNS-rebound Host on /files/ endpoint', async () => {
+      const res = await fetchWithHost('/files/anything', 'attacker.example');
+      assert.strictEqual(res.status, 421, 'foreign Host should be rejected before file lookup');
+    });
+
+    await test('rejects WebSocket upgrade from foreign Host', async () => {
+      // Connect directly to the loopback address but pretend the Host is
+      // a rebound name. The ws client sends `Host: <hostname>:<port>` by
+      // default, so we point its URL at evil.example and route the TCP
+      // connection back to the loopback listener.
+      const ws = new WebSocket(`ws://evil.example:${TEST_PORT}`, {
+        lookup: (_hostname, _opts, cb) => cb(null, '127.0.0.1', 4)
+      });
+      let opened = false;
+      let errored = false;
+      await new Promise((resolve) => {
+        ws.on('open', () => { opened = true; resolve(); });
+        ws.on('error', () => { errored = true; resolve(); });
+        ws.on('unexpected-response', () => resolve());
+        ws.on('close', resolve);
+        setTimeout(resolve, 1500);
+      });
+      try { ws.terminate(); } catch (_) { /* ignore */ }
+      assert(!opened, 'WS upgrade with foreign Host must not complete');
+      assert(errored, 'WS client should observe a connection error');
     });
 
     // ========== WebSocket Communication ==========

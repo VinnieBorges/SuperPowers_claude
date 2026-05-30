@@ -81,6 +81,51 @@ const CONTENT_DIR = path.join(SESSION_DIR, 'content');
 const STATE_DIR = path.join(SESSION_DIR, 'state');
 let ownerPid = process.env.BRAINSTORM_OWNER_PID ? Number(process.env.BRAINSTORM_OWNER_PID) : null;
 
+// ========== Host Header Allowlist (DNS-rebinding defense) ==========
+//
+// Without validating the HTTP Host header, a page on another origin can
+// DNS-rebind its own hostname to 127.0.0.1 and then read this server's
+// `/` and `/files/*` responses as if same-origin. The browser sends the
+// rebound name in `Host`, so allowlisting Host on the loopback path
+// closes the rebinding surface even when the TCP connection itself is
+// genuinely local.
+//
+// Default allowlist: the configured URL_HOST (what the agent prints in
+// the start-server.sh URL) plus the literal loopback names, both bare
+// and with the listening port appended. Operators serving the companion
+// behind a tunnel or container hostname can extend the list with the
+// BRAINSTORM_ALLOWED_HOSTS env var (comma-separated, case-insensitive).
+function buildAllowedHosts() {
+  const set = new Set();
+  const portStr = String(PORT);
+  const add = (h) => {
+    if (!h) return;
+    const hl = String(h).trim().toLowerCase();
+    if (!hl) return;
+    set.add(hl);
+    set.add(hl + ':' + portStr);
+  };
+  // Always allow the loopback names: every legitimate browser session
+  // resolves the server via one of these even when URL_HOST differs.
+  add('localhost');
+  add('127.0.0.1');
+  add('[::1]');
+  // Allow the printed/displayed URL_HOST and the bind HOST verbatim.
+  add(URL_HOST);
+  add(HOST);
+  // Operator-provided extras for tunneled / containerized setups.
+  const extra = process.env.BRAINSTORM_ALLOWED_HOSTS || '';
+  for (const h of extra.split(',')) add(h);
+  return set;
+}
+const ALLOWED_HOSTS = buildAllowedHosts();
+
+function isHostAllowed(req) {
+  const host = req.headers && req.headers.host;
+  if (typeof host !== 'string' || host.length === 0) return false;
+  return ALLOWED_HOSTS.has(host.toLowerCase());
+}
+
 const MIME_TYPES = {
   '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
   '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg',
@@ -127,6 +172,14 @@ function getNewestScreen() {
 // ========== HTTP Request Handler ==========
 
 function handleRequest(req, res) {
+  if (!isHostAllowed(req)) {
+    // Reject DNS-rebound / cross-origin Host headers before touching state
+    // or returning any content. 421 Misdirected Request is the canonical
+    // status for "this connection is not authoritative for this Host".
+    res.writeHead(421, { 'Content-Type': 'text/plain' });
+    res.end('Misdirected Request');
+    return;
+  }
   touchActivity();
   if (req.method === 'GET' && req.url === '/') {
     const screenFile = getNewestScreen();
@@ -167,6 +220,12 @@ const clients = new Set();
 function handleUpgrade(req, socket) {
   const key = req.headers['sec-websocket-key'];
   if (!key) { socket.destroy(); return; }
+
+  // Same DNS-rebinding gate as handleRequest, applied before completing
+  // the WebSocket handshake. Without this, a DNS-rebound page could
+  // open a WS connection and inject events into state_dir/events even
+  // though the TCP socket is loopback-bound.
+  if (!isHostAllowed(req)) { socket.destroy(); return; }
 
   const accept = computeAcceptKey(key);
   socket.write(
