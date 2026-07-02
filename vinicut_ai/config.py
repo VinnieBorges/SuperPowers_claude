@@ -1,0 +1,135 @@
+"""
+Central configuration for Vinicut AI.
+
+Every tunable lives here and can be overridden with an environment variable
+(optionally loaded from a `.env` file next to this module), so the project is
+portable across machines and deployable to a server without code edits.
+
+Precedence: environment variable > .env file > default.
+"""
+import os
+import logging
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _load_dotenv(path):
+    """Minimal .env loader (KEY=VALUE lines, # comments). No dependency needed."""
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except OSError:
+        pass
+
+
+_load_dotenv(os.path.join(BASE_DIR, ".env"))
+
+
+def env(key, default=None):
+    return os.environ.get(key, default)
+
+
+def env_int(key, default):
+    try:
+        return int(os.environ.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def env_float(key, default):
+    try:
+        return float(os.environ.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+RAW_DIR = env("VINICUT_RAW_DIR", os.path.join(BASE_DIR, "raw"))
+CUTS_DIR = env("VINICUT_CUTS_DIR", os.path.join(BASE_DIR, "cuts"))
+DB_DIR = env("VINICUT_DB_DIR", os.path.join(BASE_DIR, "database"))
+DB_PATH = env("VINICUT_DB_PATH", os.path.join(DB_DIR, "eibeleza.db"))
+WATCH_DIR = env("VINICUT_WATCH_DIR", os.path.join(BASE_DIR, "watch"))
+AUTO_CUTS_DIR = env("VINICUT_AUTO_CUTS_DIR", os.path.join(BASE_DIR, "auto_cuts"))
+FONTS_DIR = env("VINICUT_FONTS_DIR", os.path.join(BASE_DIR, "fonts"))
+
+# ---------------------------------------------------------------------------
+# Server
+# ---------------------------------------------------------------------------
+HOST = env("VINICUT_HOST", "127.0.0.1")
+PORT = env_int("VINICUT_PORT", 8000)
+# Comma-separated list; "*" keeps the permissive default for local use.
+CORS_ORIGINS = [o.strip() for o in env("VINICUT_CORS_ORIGINS", "*").split(",") if o.strip()]
+
+# ---------------------------------------------------------------------------
+# Media / render
+# ---------------------------------------------------------------------------
+FFMPEG_BIN = env("VINICUT_FFMPEG", env("EIBELEZA_FFMPEG", "ffmpeg"))
+FFPROBE_BIN = env("VINICUT_FFPROBE", env("EIBELEZA_FFPROBE", "ffprobe"))
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv"}
+AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg"}
+FONT_EXTENSIONS = {".ttf", ".otf"}
+OUTPUT_WIDTH = env_int("VINICUT_OUTPUT_WIDTH", 1080)
+OUTPUT_HEIGHT = env_int("VINICUT_OUTPUT_HEIGHT", 1920)
+STANDARD_CUT_DURATIONS = (5, 15, 30, 60)
+
+# Days a completed project's raw upload is kept before the janitor removes it.
+RAW_RETENTION_DAYS = env_int("VINICUT_RAW_RETENTION_DAYS", 7)
+CLEANUP_INTERVAL_SECONDS = env_int("VINICUT_CLEANUP_INTERVAL", 3600)
+
+# ---------------------------------------------------------------------------
+# AI providers
+# ---------------------------------------------------------------------------
+# llm provider: "auto" (Claude when ANTHROPIC_API_KEY is set, else local
+# Ollama), "anthropic" (Claude API), "ollama" (local), or "openai" (any
+# OpenAI-compatible endpoint: OpenAI, Groq, Together, vLLM, LM Studio, ...).
+# The DB `system_settings` table can override this at runtime from the UI;
+# these are the boot defaults.
+LLM_PROVIDER_DEFAULT = env("VINICUT_LLM_PROVIDER", "auto")
+OLLAMA_HOST = env("OLLAMA_HOST", "http://localhost:11434")
+OLLAMA_EDIT_MODEL = env("VINICUT_OLLAMA_EDIT_MODEL", "gemma4:26b")
+OLLAMA_VISION_MODEL = env("VINICUT_OLLAMA_VISION_MODEL", "llama3.2-vision:latest")
+
+ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY")
+ANTHROPIC_MODEL = env("VINICUT_ANTHROPIC_MODEL", "claude-sonnet-5")
+ANTHROPIC_BASE_URL = env("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+
+OPENAI_API_KEY = env("OPENAI_API_KEY")
+OPENAI_BASE_URL = env("OPENAI_BASE_URL", "https://api.openai.com/v1")
+OPENAI_MODEL = env("VINICUT_OPENAI_MODEL", "gpt-4o-mini")
+
+LLM_TIMEOUT_SECONDS = env_int("VINICUT_LLM_TIMEOUT", 120)
+LLM_MAX_RETRIES = env_int("VINICUT_LLM_RETRIES", 2)
+
+WHISPER_MODEL_DEFAULT = env("VINICUT_WHISPER_MODEL", "large-v3")
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+LOG_LEVEL = env("VINICUT_LOG_LEVEL", "INFO").upper()
+
+
+def setup_logging():
+    logging.basicConfig(
+        level=getattr(logging, LOG_LEVEL, logging.INFO),
+        format="%(asctime)s %(levelname)-7s [%(name)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    # FFmpeg spam lands on stderr, not the logger; keep third-party libs quieter.
+    for noisy in ("botocore", "boto3", "urllib3", "httpx"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+def get_logger(name):
+    return logging.getLogger(name)

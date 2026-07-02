@@ -1,0 +1,1991 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>EiBeleza Auto cut — AI Studio</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700&display=swap');
+
+  :root {
+    --bg-dark: #09090b;
+    --panel-dark: #121214;
+    --panel-light: #18181b;
+    --border-dark: #27272a;
+    --border-light: #3f3f46;
+    --text-primary: #f4f4f5;
+    --text-secondary: #a1a1aa;
+    --accent: #8b5cf6;
+    --accent-hover: #a78bfa;
+    --accent-muted: #4c1d95;
+    --ok: #10b981;
+    --err: #ef4444;
+    --hook-color: #0d9488;
+    --demo-color: #3b82f6;
+    --cta-color: #db2777;
+    --mono: 'Consolas','SF Mono','Roboto Mono',ui-monospace,monospace;
+  }
+  
+  * { box-sizing: border-box; }
+  
+  body {
+    margin: 0;
+    height: 100vh;
+    background: var(--bg-dark);
+    color: var(--text-primary);
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  
+  a { color: var(--accent-hover); text-decoration: none; }
+
+  /* Custom Scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-dark);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--border-light);
+  }
+  
+  /* Topbar Header */
+  .topbar {
+    height: 52px;
+    background: var(--panel-dark);
+    border-bottom: 1px solid var(--border-dark);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    z-index: 40;
+  }
+  
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 700;
+    font-size: 15px;
+    color: #fff;
+    font-family: 'Outfit', sans-serif;
+  }
+  
+  .brand .mark {
+    width: 14px;
+    height: 14px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+    transform: rotate(45deg);
+    border-radius: 2px;
+    box-shadow: 0 0 8px var(--accent);
+  }
+  
+  .brand small {
+    color: var(--text-secondary);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin-left: 4px;
+  }
+  
+  /* Workspace Layout Grid */
+  .studio-layout {
+    flex: 1;
+    display: grid;
+    grid-template-rows: 1fr 110px;
+    height: calc(100vh - 52px);
+    overflow: hidden;
+  }
+  
+  .main-columns {
+    display: grid;
+    grid-template-columns: 360px 1fr 380px;
+    height: 100%;
+    overflow: hidden;
+  }
+  
+  @media (max-width: 1200px) {
+    .main-columns {
+      grid-template-columns: 300px 1fr 330px;
+    }
+  }
+  
+  /* Panel containers */
+  .col-panel {
+    background: var(--panel-dark);
+    border-right: 1px solid var(--border-dark);
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+  }
+  
+  .col-panel.right {
+    border-right: none;
+    border-left: 1px solid var(--border-dark);
+  }
+  
+  /* Left Panel: Transcript script */
+  .transcript-header {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border-dark);
+    font-weight: 700;
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 1px;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  
+  .transcript-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  
+  .transcript-paragraph {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border-dark);
+    transition: 0.2s;
+  }
+  
+  .transcript-paragraph.hook-card {
+    border-left: 3px solid var(--hook-color);
+    background: rgba(13, 148, 136, 0.015);
+  }
+  .transcript-paragraph.demo-card {
+    border-left: 3px solid var(--demo-color);
+    background: rgba(59, 130, 246, 0.015);
+  }
+  .transcript-paragraph.cta-card {
+    border-left: 3px solid var(--cta-color);
+    background: rgba(219, 39, 119, 0.015);
+  }
+  
+  .transcript-paragraph:hover {
+    border-color: var(--border-light);
+    background: rgba(255, 255, 255, 0.03);
+  }
+  
+  .transcript-paragraph.active.hook-card {
+    border-color: var(--hook-color);
+    background: rgba(13, 148, 136, 0.07);
+    box-shadow: 0 0 8px rgba(13, 148, 136, 0.15);
+  }
+  .transcript-paragraph.active.demo-card {
+    border-color: var(--demo-color);
+    background: rgba(59, 130, 246, 0.07);
+    box-shadow: 0 0 8px rgba(59, 130, 246, 0.15);
+  }
+  .transcript-paragraph.active.cta-card {
+    border-color: var(--cta-color);
+    background: rgba(219, 39, 119, 0.07);
+    box-shadow: 0 0 8px rgba(219, 39, 119, 0.15);
+  }
+  
+  .paragraph-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  
+  .meta-tag {
+    text-transform: uppercase;
+    font-size: 8.5px;
+    font-weight: 800;
+    letter-spacing: 0.8px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    color: #fff;
+    font-family: 'Outfit', sans-serif;
+    cursor: pointer;
+    user-select: none;
+    transition: transform 0.1s;
+  }
+  
+  .meta-tag:active {
+    transform: scale(0.95);
+  }
+  
+  .meta-tag.hook { background: var(--hook-color); }
+  .meta-tag.demo { background: var(--demo-color); }
+  .meta-tag.cta { background: var(--cta-color); }
+  
+  .time-badge-input {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--border-dark);
+    color: var(--text-secondary);
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 1px 4px;
+    border-radius: 3px;
+    width: 48px;
+    text-align: center;
+    transition: 0.15s;
+  }
+  
+  .time-badge-input:focus {
+    border-color: var(--accent);
+    color: #fff;
+    outline: none;
+  }
+  
+  .paragraph-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  
+  .paragraph-textarea {
+    width: 100%;
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 12.5px;
+    line-height: 1.45;
+    resize: none;
+    padding: 4px;
+    border-radius: 4px;
+    transition: 0.15s;
+    cursor: pointer;
+  }
+  
+  .paragraph-textarea:hover {
+    background: rgba(255,255,255,0.02);
+  }
+  
+  .paragraph-textarea:focus {
+    outline: none;
+    background: var(--panel-light);
+    border-color: var(--border-dark);
+  }
+  
+  /* Center Panel: Preview */
+  .preview-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: #09090b;
+    padding: 20px;
+    height: 100%;
+    position: relative;
+    overflow: hidden;
+  }
+  
+  .preview-monitor-container {
+    flex: 1;
+    width: 100%;
+    max-width: 450px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    position: relative;
+  }
+  
+  .preview-video-wrapper {
+    width: 100%;
+    aspect-ratio: 9/16;
+    max-height: calc(100vh - 250px);
+    background: #000;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--border-dark);
+    position: relative;
+    box-shadow: 0 15px 40px rgba(0,0,0,0.6);
+  }
+  
+  .preview-video-wrapper video {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+  
+  /* Transport Controls */
+  .transport-bar {
+    width: 100%;
+    max-width: 450px;
+    background: var(--panel-dark);
+    border: 1px solid var(--border-dark);
+    border-radius: 6px;
+    margin-top: 14px;
+    padding: 8px 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    justify-content: space-between;
+  }
+  
+  .transport-play-btn {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: 0.15s;
+  }
+  
+  .transport-play-btn:hover {
+    background: var(--accent-hover);
+    transform: scale(1.05);
+  }
+  
+  .transport-play-btn svg {
+    width: 12px;
+    height: 12px;
+    fill: currentColor;
+  }
+  
+  .transport-time {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+  
+  /* Right Panel: Tools and Settings panels */
+  .tools-layout {
+    display: flex;
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+  }
+  
+  .tools-strip {
+    width: 56px;
+    background: var(--panel-dark);
+    border-right: 1px solid var(--border-dark);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px 0;
+    gap: 14px;
+  }
+  
+  .tool-btn {
+    width: 38px;
+    height: 38px;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: 0.15s;
+  }
+  
+  .tool-btn svg {
+    width: 18px;
+    height: 18px;
+  }
+  
+  .tool-btn:hover {
+    background: var(--panel-light);
+    color: #fff;
+  }
+  
+  .tool-btn.active {
+    background: var(--accent-muted);
+    color: var(--accent-hover);
+    box-shadow: 0 0 10px rgba(139, 92, 246, 0.15);
+  }
+  
+  .tool-sidebar-panel {
+    flex: 1;
+    background: var(--panel-dark);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  
+  .tool-panel-header {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border-dark);
+    font-weight: 700;
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 1px;
+    color: var(--text-secondary);
+    font-family: 'Outfit', sans-serif;
+  }
+  
+  .tool-panel-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  
+  /* Bottom Panel: Waveform timeline */
+  .timeline-panel {
+    background: var(--panel-dark);
+    border-top: 1px solid var(--border-dark);
+    height: 110px;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    padding: 10px 16px;
+    user-select: none;
+  }
+  
+  .timeline-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+  
+  .timeline-track-container {
+    flex: 1;
+    position: relative;
+    border-radius: 6px;
+    overflow: visible;
+    border: 1px solid var(--border-dark);
+    background: #09090b;
+    display: flex;
+  }
+  
+  .timeline-segment-band {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    position: relative;
+    padding: 0 10px;
+    overflow: hidden;
+  }
+  
+  .segment-label {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    z-index: 5;
+  }
+  
+  .segment-label.hook-lbl { color: var(--hook-color); }
+  .segment-label.demo-lbl { color: var(--demo-color); }
+  .segment-label.cta-lbl { color: var(--cta-color); }
+  
+  .segment-time {
+    font-size: 9px;
+    color: var(--text-secondary);
+    font-family: var(--mono);
+    font-weight: 400;
+  }
+  
+  /* Timeline Split Handlers */
+  .split-handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 6px;
+    background: var(--accent);
+    cursor: col-resize;
+    transform: translateX(-50%);
+    z-index: 25;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 0 8px var(--accent);
+  }
+  
+  .split-handle::after {
+    content: '';
+    width: 2px;
+    height: 18px;
+    background: #fff;
+    border-radius: 1px;
+  }
+  
+  .split-tooltip {
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translate(-50%, -6px);
+    background: var(--panel-light);
+    border: 1px solid var(--border-light);
+    color: #fff;
+    font-size: 9.5px;
+    font-family: var(--mono);
+    padding: 3px 6px;
+    border-radius: 4px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s;
+    white-space: nowrap;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+  }
+  
+  .split-handle:hover .split-tooltip {
+    opacity: 1;
+  }
+  
+  /* Waveform overlay */
+  .waveform-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 2;
+  }
+  
+  /* Playhead */
+  .timeline-playhead {
+    position: absolute;
+    top: -2px;
+    bottom: -2px;
+    width: 2px;
+    background: #fff;
+    left: 0%;
+    pointer-events: none;
+    z-index: 30;
+    box-shadow: 0 0 8px rgba(255,255,255,0.9);
+  }
+  
+  .timeline-playhead::before {
+    content: '';
+    position: absolute;
+    top: -2px;
+    left: -4px;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid #fff;
+  }
+  
+  /* Outputs cards */
+  .out-card {
+    background: var(--panel-light);
+    border: 1px solid var(--border-dark);
+    border-radius: 6px;
+    padding: 10px;
+    margin-bottom: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    transition: border-color 0.15s;
+  }
+  
+  .out-card:hover {
+    border-color: var(--border-light);
+  }
+  
+  .out-card-header {
+    display: flex;
+    justify-content: space-between;
+    font-weight: 600;
+    font-size: 12px;
+  }
+  
+  .out-card-meta {
+    font-size: 10px;
+    color: var(--text-secondary);
+  }
+  
+  .out-card-actions {
+    display: flex;
+    gap: 8px;
+  }
+  
+  /* Form elements */
+  .field-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  
+  .field-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    letter-spacing: 0.5px;
+  }
+  
+  select, input[type=text], input[type=number], textarea {
+    background: var(--panel-light);
+    border: 1px solid var(--border-dark);
+    color: var(--text-primary);
+    padding: 7px 10px;
+    border-radius: 5px;
+    font-family: inherit;
+    font-size: 12.5px;
+    width: 100%;
+    transition: 0.12s;
+  }
+  
+  select:focus, input:focus, textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  
+  /* Primary buttons */
+  .btn {
+    background: linear-gradient(135deg, var(--accent), #7c3aed);
+    color: #fff;
+    border: 1px solid transparent;
+    padding: 6px 12px;
+    border-radius: 5px;
+    font-weight: 600;
+    font-size: 12px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: 0.15s;
+  }
+  
+  .btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(139, 92, 246, 0.2);
+  }
+  
+  .btn.ghost {
+    background: transparent;
+    color: var(--text-primary);
+    border-color: var(--border-light);
+  }
+  
+  .btn.ghost:hover {
+    border-color: var(--accent);
+    color: var(--accent-hover);
+    box-shadow: none;
+  }
+  
+  .btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+  }
+  
+  .btn.sm {
+    padding: 4px 8px;
+    font-size: 11px;
+  }
+  
+  /* Home Projects Grid */
+  .home-wrap {
+    padding: 24px;
+    max-width: 1100px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    height: 100%;
+    overflow-y: auto;
+  }
+  
+  .home-panel {
+    background: var(--panel-dark);
+    border: 1px solid var(--border-dark);
+    border-radius: 8px;
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+  }
+  
+  .home-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 16px;
+  }
+  
+  .project-card {
+    background: var(--panel-dark);
+    border: 1px solid var(--border-dark);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: 0.2s;
+    position: relative;
+  }
+  
+  .project-card:hover {
+    border-color: var(--border-light);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  }
+  
+  /* dropzone */
+  .drop {
+    border: 1.5px dashed var(--border-light);
+    border-radius: 8px;
+    padding: 30px;
+    text-align: center;
+    transition: 0.15s;
+    cursor: pointer;
+    color: var(--text-secondary);
+    background: var(--panel-dark);
+  }
+  
+  .drop:hover, .drop.hover {
+    border-color: var(--accent);
+    background: rgba(139, 92, 246, 0.04);
+    color: var(--text-primary);
+  }
+  
+  .drop svg {
+    width: 28px;
+    height: 28px;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+  }
+  
+  .drop:hover svg, .drop.hover svg {
+    color: var(--accent);
+  }
+  
+  /* toast / modal / spinner */
+  .toast-wrap {
+    position: fixed;
+    right: 16px;
+    bottom: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 60;
+  }
+  
+  .toast {
+    background: var(--panel-dark);
+    border: 1px solid var(--border-dark);
+    border-left: 3px solid var(--accent);
+    padding: 10px 14px;
+    border-radius: 5px;
+    box-shadow: 0 8px 28px rgba(0,0,0,0.5);
+    max-width: 340px;
+    font-size: 12.5px;
+    animation: sl 0.18s;
+  }
+  
+  .toast.err { border-left-color: var(--err); } 
+  .toast.ok { border-left-color: var(--ok); }
+  @keyframes sl { from { transform: translateX(16px); opacity: 0; } to { transform: none; opacity: 1; } }
+  
+  .spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--border-dark);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    display: inline-block;
+    animation: spin 0.8s linear infinite;
+    vertical-align: -2px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  
+  .pill::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    display: inline-block;
+  }
+  .empty { text-align: center; color: var(--text-secondary); padding: 28px; }
+  .order-list { display: flex; flex-direction: column; gap: 6px; }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand"><span class="mark"></span>EiBeleza<small>Auto cut - AI</small></div>
+    <div style="display:flex;align-items:center;gap:12px">
+      <span class="tag mono" id="aiEngineBadge" title="Active AI editorial provider" style="font-size:10px;background:#1e1b2e;color:var(--accent-hover);padding:3px 8px;border-radius:4px;font-weight:600;border:1px solid var(--accent-muted);">AI: …</span>
+      <span class="tag mono" id="formatEnforcer" style="font-size:10px;background:#27272a;color:var(--text-secondary);padding:3px 8px;border-radius:4px;font-weight:600;">PORTRAIT 9:16 LOCK</span>
+      <button class="btn ghost sm" id="backBtn" onclick="goHome()" style="display:none">‹ Projects</button>
+      <button class="btn sm" id="exportBtn" onclick="doRender()" style="display:none;background:var(--accent);font-weight:700;">EXPORT</button>
+      <button class="btn sm" id="stopBtn" onclick="doStopRender()" style="display:none;background:var(--err);font-weight:700;">STOP</button>
+    </div>
+  </div>
+  <div class="wrap" id="view" style="flex:1;overflow:hidden;padding:0;margin:0;max-width:none;"></div>
+  <div class="toast-wrap" id="toasts"></div>
+
+<script>
+"use strict";
+/* ---------------- icons ---------------- */
+const IC = {
+  dl:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 11l5 5 5-5"/><path d="M5 21h14"/></svg>',
+  up:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="M7 9l5-5 5 5"/><path d="M5 20h14"/></svg>',
+  spark:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M12 3l1.7 5.1L19 10l-5.3 1.9L12 17l-1.7-5.1L5 10l5.3-1.9z"/></svg>',
+  play:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>',
+  magic:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/><path d="m5 3 1 2.5L8.5 6 6 7 5 9.5 4 7 1.5 6 4 5.5 5 3Z"/><path d="m19 17 1 2.5 2.5.5-2.5 1-1 2.5-1-2.5-2.5-1 2.5-1 1-2.5Z"/></svg>',
+  brand:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 14.7255 3.09032 17.1962 4.85857 19C5.37805 19.5195 5.41908 20.3622 4.98188 20.9193C4.54468 21.4764 3.73144 21.6146 3.12579 21.229C2.42764 20.7847 2 20.046 2 19.2024C2 17.986 2.986 17 4.20242 17H5C6.10457 17 7 16.1046 7 15C7 14.4477 7.44772 14 8 14H9C10.1046 14 11 13.1046 11 12C11 11.4477 11.4477 11 12 11C13.1046 11 14 10.1046 14 9V8C14 6.89543 14.8954 6 16 6C16.5523 6 17 5.55228 17 5C17 3.89543 17.8954 3 19 3H20C21.1046 3 22 3.89543 22 5V6C22 14.8366 14.8366 22 6 22H12Z"/></svg>',
+  track:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polygon points="2 17 12 22 22 17"/><polygon points="2 12 12 17 22 12"/></svg>',
+  captions:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="7" y1="8" x2="17" y2="8"/><line x1="7" y1="12" x2="17" y2="12"/><line x1="7" y1="16" x2="13" y2="16"/></svg>',
+  music:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>',
+  settings:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>'
+};
+/* ---------------- API ---------------- */
+const API = {
+  async req(url, opts){
+    const r = await fetch(url, opts);
+    if(!r.ok){ let m='HTTP '+r.status; try{const d=await r.json(); m=d.detail||m;}catch(e){} throw new Error(m); }
+    const ct = r.headers.get('content-type')||''; return ct.includes('json') ? r.json() : r;
+  },
+  projects(){ return this.req('/api/projects'); },
+  project(id){ return this.req('/api/projects/'+id); },
+  settings(){ return this.req('/api/settings'); },
+  saveSettings(s){ return this.req('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({settings:s})}); },
+  fonts(){ return this.req('/api/fonts'); },
+  render(id,p){ return this.req('/api/projects/'+id+'/render',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)}); },
+  aiPreset(id,prompt){ return this.req('/api/projects/'+id+'/generate-subtitle-preset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt})}); },
+};
+const STYLES = ["Bold Yellow","Clean White","Minimalist","TikTok Bold","Cyberpunk Neon","Netflix Pop","Retro Yellow"];
+const TRANSITIONS = ["none","fade","dissolve","fade_black","fade_white","zoom_blur","slideleft","wipeleft","circleopen","radial","pixelize"];
+const ANIMS = ["none","fade","pop","bounce"];
+
+/* ---------------- helpers ---------------- */
+const $ = (s,r=document)=>r.querySelector(s);
+const view = $('#view');
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function fmt(t){ t=Math.max(0,t||0); const m=Math.floor(t/60), s=Math.floor(t%60); return m+':'+String(s).padStart(2,'0'); }
+function toast(msg, kind=''){ const t=document.createElement('div'); t.className='toast '+kind; t.textContent=msg; $('#toasts').appendChild(t); setTimeout(()=>t.remove(), kind==='err'?6000:3500); }
+function dl(url){ const a=document.createElement('a'); a.href=url; a.download=''; document.body.appendChild(a); a.click(); a.remove(); }
+
+let poll=null;
+function stopPoll(){ if(poll){ clearInterval(poll); poll=null; } }
+function goHome(){ stopPoll(); location.hash=''; renderHome(); }
+
+/* ---------------- HOME ---------------- */
+let selected = new Set();
+async function renderHome(){
+  $('#backBtn').style.display='none';
+  $('#exportBtn').style.display='none';
+  $('#stopBtn').style.display='none';
+  selected = new Set();
+  view.innerHTML = `
+    <div class="home-wrap">
+      <!-- Premium Hero Banner -->
+      <div style="background: linear-gradient(135deg, rgba(139, 92, 246, 0.12) 0%, rgba(99, 102, 241, 0.04) 100%); padding: 22px 24px; border-radius: 12px; border: 1px solid rgba(139, 92, 246, 0.15);">
+        <h1 style="font-family: 'Outfit', sans-serif; font-size: 20px; font-weight: 700; margin: 0 0 6px 0; background: linear-gradient(to right, #fff, var(--text-secondary)); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Create viral short clips with AI</h1>
+        <p style="color: var(--text-secondary); margin: 0; font-size: 12px; line-height: 1.45;">Drop footage below. The AI automatically transcribes, segments Hook / Demo / CTA highlights, dynamically re-orders timeline assembly options, and burns high-retention captions.</p>
+      </div>
+
+      <div class="home-panel">
+        <div style="font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-secondary);margin-bottom:12px;">Import footage</div>
+        <div class="drop" id="drop">${IC.up}<div><b>Drag &amp; drop</b> video(s) here, or click to browse</div><div style="font-size:11px;color:var(--text-secondary);margin-top:5px">mp4 · mov · avi · mkv — bulk supported</div></div>
+        <input type="file" id="file" accept=".mp4,.mov,.avi,.mkv" multiple style="display:none" />
+      </div>
+      
+      <div class="home-panel">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+          <div style="font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-secondary);">Projects Library</div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <input type="text" id="projectSearch" placeholder="🔍 Search projects..." oninput="filterProjects()" style="width:160px;padding:4px 8px;font-size:11px;height:24px;border-radius:4px;background:var(--panel-light);margin:0;border:1px solid var(--border-dark);color:#fff;"/>
+            <button class="btn ghost sm" id="zipBtn" disabled onclick="bulkZip()">${IC.dl} ZIP (0)</button>
+          </div>
+        </div>
+        <div id="projects"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+      </div>
+    </div>`;
+  const drop=$('#drop'), file=$('#file');
+  drop.onclick=()=>file.click();
+  file.onchange=()=>{ 
+      if(file.files.length) doUpload([...file.files]); 
+      file.value = ''; 
+  };
+  drop.ondragover=e=>{e.preventDefault();drop.classList.add('hover');};
+  drop.ondragleave=()=>drop.classList.remove('hover');
+  drop.ondrop=e=>{e.preventDefault();drop.classList.remove('hover');doUpload([...e.dataTransfer.files]);};
+  await loadProjects();
+  ensureWS();
+}
+
+/* ---------------- live updates (WebSocket with auto-reconnect) ---------------- */
+let liveWS = null;
+let wsRetry = 0;
+
+function ensureWS(){
+  if (liveWS && (liveWS.readyState === WebSocket.OPEN || liveWS.readyState === WebSocket.CONNECTING)) return;
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  liveWS = new WebSocket(`${protocol}//${location.host}/api/ws`);
+  liveWS.onopen = () => { wsRetry = 0; };
+  liveWS.onmessage = handleWSMessage;
+  liveWS.onclose = () => {
+    // Exponential backoff reconnect (1s -> 30s cap) instead of reloading the page.
+    const delay = Math.min(30000, 1000 * Math.pow(2, wsRetry++));
+    setTimeout(ensureWS, delay);
+  };
+}
+
+function handleWSMessage(e){
+  let msg; try{ msg = JSON.parse(e.data); }catch(err){ return; }
+  if (msg.type !== 'status') return;
+  const card = document.getElementById(`project-card-${msg.project_id}`);
+  if (card) {
+      const pill = card.querySelector('.pill');
+      if (pill) {
+          pill.className = `pill ${msg.status}`;
+          pill.textContent = msg.status;
+          pill.style.color = statusColor(msg.status);
+      }
+      const progressEl = card.querySelector('.progress-fill');
+      if (progressEl && msg.progress !== undefined) {
+          progressEl.style.width = `${msg.progress}%`;
+      }
+      const progressText = card.querySelector('.progress-text');
+      if (progressText && msg.progress !== undefined) {
+          progressText.textContent = `${Number(msg.progress).toFixed(1)}%`;
+      }
+
+      if (msg.status === 'failed' && msg.error) {
+          card.setAttribute('data-error', msg.error);
+          if (pill) {
+              pill.style.cursor = 'pointer';
+              pill.title = "Click to view error";
+              pill.onclick = (ev) => {
+                  ev.stopPropagation();
+                  alert("Error: " + card.getAttribute('data-error'));
+              };
+          }
+      }
+      if (msg.status === 'completed') {
+          loadProjects(); // Full reload to get the newly completed assets
+      }
+  } else if ($('#projects')) {
+      loadProjects();
+  }
+}
+
+async function doUpload(files){
+  files = files.filter(f=>/\.(mp4|mov|avi|mkv)$/i.test(f.name));
+  if(!files.length){ toast('No supported video files.','err'); return; }
+  try{
+    toast(`Uploading ${files.length} file(s)... Please wait.`, 'ok');
+    const fd=new FormData();
+    if(files.length===1){ fd.append('file',files[0]); await API.req('/api/upload',{method:'POST',body:fd}); }
+    else{ files.forEach(f=>fd.append('files',f)); await API.req('/api/upload-bulk',{method:'POST',body:fd}); }
+    toast(`Upload complete! Queued for processing.`,'ok');
+    loadProjects();
+  }catch(e){ toast('Upload failed: '+e.message,'err'); }
+}
+
+async function loadProjects(){
+  let list; try{ list=await API.projects(); }catch(e){ return; }
+  const box=$('#projects'); if(!box) return;
+  if(!list.length){ box.innerHTML='<div class="empty">No projects yet — drop a video above to get started.</div>'; return; }
+  
+  box.innerHTML = `<div class="home-grid">${list.map(p=>{
+    const processing = ['pending','queued','analyzing','rendering'].includes(p.status);
+    const stopHtml = processing ? `<button class="btn sm" style="background:var(--err);font-size:8.5px;padding:1px 6px;margin-left:8px;font-weight:700;border:none;height:18px;" onclick="event.stopPropagation();doStopProjectHome(${p.id})">STOP</button>` : '';
+    const errorAttr = p.error_message ? `data-error="${esc(p.error_message)}"` : '';
+    const clickError = p.error_message ? `cursor:pointer;" title="Click to view error" onclick="event.stopPropagation(); alert('Error: ' + this.closest('.project-card').getAttribute('data-error'))"` : `"`;
+    const progressHtml = processing ? `<div style="margin-top:6px;background:var(--border-dark);border-radius:2px;height:4px;width:100%;overflow:hidden;position:relative;"><div class="progress-fill" style="background:var(--accent);height:100%;width:${p.progress || 0}%;transition:width 0.3s ease;"></div></div><div class="progress-text" style="font-size:9px;color:var(--text-secondary);margin-top:2px;text-align:right;">${Number(p.progress || 0).toFixed(1)}%</div>` : '';
+    return `
+      <div id="project-card-${p.id}" class="project-card" ${errorAttr} onclick="openProject(${p.id})" style="display:flex;flex-direction:row;align-items:center;gap:12px;padding:12px;">
+        <div style="width:44px;height:56px;background:linear-gradient(135deg, var(--accent-muted), var(--panel-light));border:1px solid var(--border-dark);border-radius:4px;display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--accent-hover);font-family:'Outfit';font-size:14px;">
+          ${p.filename.slice(0,2).toUpperCase()}
+        </div>
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;">
+          <div style="font-weight:700;font-size:12.5px;word-break:break-all;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#fff;">${esc(p.filename)}</div>
+          <div style="font-size:10px;color:var(--text-secondary);font-family:var(--mono);">#${p.id} · ${(p.created_at||'').split(' ')[0]}</div>
+          <div style="margin-top:2px;display:flex;align-items:center;">
+            <span class="pill ${esc(p.status)}" style="font-size:8.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;display:inline-flex;align-items:center;gap:4px;color:${statusColor(p.status)};${clickError}>${esc(p.status)}</span>
+            ${stopHtml}
+          </div>
+          ${progressHtml}
+        </div>
+        <input type="checkbox" class="cb" style="width:14px;height:14px;accent-color:var(--accent);align-self:flex-start;margin-top:2px;" onclick="event.stopPropagation();toggleSel(${p.id},this.checked)" ${selected.has(p.id)?'checked':''}/>
+      </div>`;
+  }).join('')}</div>`;
+  
+  // Apply any search filter that was typed
+  filterProjects();
+}
+
+function filterProjects() {
+  const input = $('#projectSearch'); if (!input) return;
+  const query = input.value.toLowerCase();
+  document.querySelectorAll('.project-card').forEach(el => {
+    const filename = el.querySelector('div:nth-child(2) > div').textContent.toLowerCase();
+    el.style.display = filename.includes(query) ? '' : 'none';
+  });
+}
+
+function statusColor(status) {
+  if (status === 'completed') return 'var(--ok)';
+  if (status === 'failed') return 'var(--err)';
+  if (['analyzing','rendering'].includes(status)) return 'var(--accent-hover)';
+  return 'var(--text-secondary)';
+}
+
+async function doStopProjectHome(id) {
+  if(!confirm('Are you sure you want to stop rendering and queue processes for this project?')) return;
+  try {
+    await API.req(`/api/projects/${id}/stop`, {method: 'POST'});
+    toast('Render process stopped successfully.', 'ok');
+    loadProjects();
+  } catch(e) {
+    toast('Failed to stop: ' + e.message, 'err');
+  }
+}
+
+function toggleSel(id,on){ on?selected.add(id):selected.delete(id); const b=$('#zipBtn'); if(b){ b.disabled=selected.size===0; b.innerHTML=`${IC.dl} ZIP (${selected.size})`; } }
+async function bulkZip(){
+  if(!selected.size) return;
+  try{
+    const r=await fetch('/api/projects/download-zip-bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_ids:[...selected]})});
+    if(!r.ok) throw new Error((await r.json()).detail||r.status);
+    const blob=await r.blob(); const u=URL.createObjectURL(blob); dl(u); setTimeout(()=>URL.revokeObjectURL(u),10000);
+  }catch(e){ toast('ZIP failed: '+e.message,'err'); }
+}
+
+/* ---------------- DETAIL ---------------- */
+let cur=null;
+let curOrder=["Hook","Demo","CTA"];
+let activeToolTab = 'magic';
+
+async function openProject(id){
+  stopPoll(); location.hash='p'+id;
+  $('#backBtn').style.display='';
+  view.innerHTML='<div class="col-panel" style="margin:24px;"><div class="empty"><span class="spinner"></span> Loading project…</div></div>';
+  await refreshDetail(id, true);
+  poll = setInterval(async ()=>{ if(cur && ['pending','queued','analyzing','rendering'].includes(cur.status)) await refreshDetail(id,false); }, 3500);
+}
+
+async function refreshDetail(id, full){
+  let p; try{ p=await API.project(id); }catch(e){ toast('Load failed: '+e.message,'err'); return; }
+  const prevStatus = cur && cur.status;
+  cur=p;
+  if(full || !$('#transcriptContent')) drawDetail(p);
+  else {
+    const sp=$('#exportBtn');
+    const stopB=$('#stopBtn');
+    const processing = ['pending','queued','analyzing','rendering'].includes(p.status);
+    if(sp){
+      if(processing){
+        sp.disabled=true;
+        sp.innerHTML='<span class="spinner"></span> EXPORTING...';
+      } else {
+        sp.disabled=false;
+        sp.innerHTML='EXPORT';
+      }
+    }
+    if(stopB) stopB.style.display = processing ? '' : 'none';
+    if(prevStatus && prevStatus!=='completed' && p.status==='completed'){ drawDetail(p); toast('Render complete','ok'); }
+  }
+}
+
+function drawDetail(p){
+  const processing = ['pending','queued','analyzing','rendering'].includes(p.status);
+  const sm = p.segments_map || { hook: [0.0, 5.0], demo: [5.0, 20.0], cta: [20.0, 25.0] };
+  const hasAnalysis = !!(p.transcript && p.transcript.length);
+  
+  $('#backBtn').style.display = '';
+  const exportBtn = $('#exportBtn');
+  const stopBtn = $('#stopBtn');
+  if (exportBtn) {
+    exportBtn.style.display = '';
+    if (processing) {
+      exportBtn.disabled = true;
+      exportBtn.innerHTML = '<span class="spinner"></span> EXPORTING...';
+    } else {
+      exportBtn.disabled = !hasAnalysis;
+      exportBtn.innerHTML = hasAnalysis ? 'EXPORT' : 'ANALYZING...';
+    }
+  }
+  if (stopBtn) {
+    stopBtn.style.display = processing ? '' : 'none';
+  }
+
+  view.innerHTML = `
+    <div class="studio-layout">
+      <div class="main-columns">
+        
+        <!-- Left Panel: Interactive Transcript Editor -->
+        <div class="col-panel">
+          <div class="transcript-header">
+            <span>Interactive Caption Editor</span>
+            <span style="font-size:9px;color:var(--text-secondary);">Click speaker to cycle</span>
+          </div>
+          <div style="padding: 8px 12px; border-bottom: 1px solid var(--border-dark); background: var(--panel-dark); display: flex; gap: 8px;">
+            <input type="text" id="scriptSearch" placeholder="🔍 Search captions..." oninput="filterTranscript()" style="padding: 4px 8px; font-size: 11px; height: 24px; border-radius: 4px; background: var(--panel-light); border: 1px solid var(--border-dark); color:#fff;" />
+          </div>
+          <div class="transcript-content" id="transcriptContent">
+            ${hasAnalysis ? '' : '<div class="empty"><span class="spinner"></span> Transcribing audio segments...</div>'}
+          </div>
+        </div>
+        
+        <!-- Center Panel: Program Monitor -->
+        <div class="preview-panel">
+          <div class="preview-monitor-container">
+            <div class="preview-video-wrapper">
+              <video id="player" src="/raw/${encodeURIComponent(p.filename)}" preload="metadata"></video>
+            </div>
+            
+            <div class="transport-bar">
+              <button class="transport-play-btn" id="transportPlayBtn" onclick="togglePlay()">
+                <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+              </button>
+              <div class="transport-time" id="timelineTimeLabel">0:00 / 0:00</div>
+              <div style="font-size:10px;color:var(--text-secondary);font-weight:600;background:var(--panel-light);padding:3px 6px;border-radius:4px;border:1px solid var(--border-dark);">PORTRAIT 9:16</div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Right Panel: Vertical Strip and Config Sidebar -->
+        <div class="col-panel right">
+          <div class="tools-layout">
+            <div class="tools-strip">
+              <button class="tool-btn ${activeToolTab==='magic'?'active':''}" data-tab="magic" onclick="setToolTab('magic')" title="Magic Tools & Exports">${IC.magic}</button>
+              <button class="tool-btn ${activeToolTab==='brand'?'active':''}" data-tab="brand" onclick="setToolTab('brand')" title="Branding & Caption Styles">${IC.brand}</button>
+              <button class="tool-btn ${activeToolTab==='track'?'active':''}" data-tab="track" onclick="setToolTab('track')" title="Clip Assembly Order">${IC.track}</button>
+              <button class="tool-btn ${activeToolTab==='captions'?'active':''}" data-tab="captions" onclick="setToolTab('captions')" title="Captions Stats">${IC.captions}</button>
+              <button class="tool-btn ${activeToolTab==='music'?'active':''}" data-tab="music" onclick="setToolTab('music')" title="Background Music & Ducking">${IC.music}</button>
+              <button class="tool-btn ${activeToolTab==='settings'?'active':''}" data-tab="settings" onclick="setToolTab('settings')" title="System Settings">${IC.settings}</button>
+            </div>
+            <div class="tool-sidebar-panel" id="toolSidebarPanel"></div>
+          </div>
+        </div>
+        
+      </div>
+      
+      <!-- Bottom Row: Waveform Segmented Timeline -->
+      <div class="timeline-panel">
+        <div class="timeline-header">
+          <div style="font-weight:600;text-transform:uppercase;font-size:10px;letter-spacing:0.5px;">Interactive Segment Timeline</div>
+          <div style="font-size:10px;color:var(--text-secondary);">Drag handle split lines to adjust transition boundaries</div>
+        </div>
+        <div class="timeline-track-container" id="timelineTrack"></div>
+      </div>
+      
+    </div>
+  `;
+  
+  curOrder = ["Hook", "Demo", "CTA"];
+  drawToolsSidebar();
+  
+  if (hasAnalysis) {
+    drawSubs(p.transcript);
+  }
+  
+  setupTimeline();
+}
+
+function makeWaveformSvg(width=1000, height=36) {
+  let bars = '';
+  for (let i = 0; i < width; i += 4) {
+    let h = Math.abs(Math.sin(i * 0.05) * 12) + Math.abs(Math.cos(i * 0.13) * 8) + Math.random() * 6;
+    h = Math.min(height - 4, Math.max(4, h));
+    let y = (height - h) / 2;
+    let color = i % 8 === 0 ? '#8b5cf6' : '#a78bfa';
+    bars += `<rect x="${i}" y="${y}" width="2" height="${h}" rx="1" fill="${color}" opacity="0.18"/>`;
+  }
+  return `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" style="width:100%;height:100%;display:block;position:absolute;inset:0;pointer-events:none;">${bars}</svg>`;
+}
+
+function drawTimeline() {
+  const tl = $('#timelineTrack'); if (!tl || !cur) return;
+  const sm = cur.segments_map || { hook: [0.0, 5.0], demo: [5.0, 20.0], cta: [20.0, 25.0] };
+  const h = sm.hook || [0.0, 0.0], d = sm.demo || [0.0, 0.0], c = sm.cta || [0.0, 0.0];
+  
+  const v = $('#player');
+  let total = Math.max(c[1]||0, d[1]||0, h[1]||0) || 1.0;
+  if (v && isFinite(v.duration) && v.duration > 0) total = v.duration;
+  
+  const pct = (val) => (val / total * 100).toFixed(3) + '%';
+  const w = (a) => (((a[1] - a[0]) / total) * 100).toFixed(3) + '%';
+  
+  tl.innerHTML = `
+    <div class="timeline-segment-band hook-band" style="width:${w(h)}; background: rgba(13, 148, 136, 0.06); border-left: 2px solid var(--hook-color);">
+      <span class="segment-label hook-lbl">Hook <span class="segment-time">${fmt(h[0])} - ${fmt(h[1])}</span></span>
+    </div>
+    <div class="timeline-segment-band demo-band" style="width:${w(d)}; background: rgba(59, 130, 246, 0.06); border-left: 2px solid var(--demo-color);">
+      <span class="segment-label demo-lbl">Demo <span class="segment-time">${fmt(d[0])} - ${fmt(d[1])}</span></span>
+    </div>
+    <div class="timeline-segment-band cta-band" style="width:${w(c)}; background: rgba(219, 39, 119, 0.06); border-left: 2px solid var(--cta-color);">
+      <span class="segment-label cta-lbl">CTA <span class="segment-time">${fmt(c[0])} - ${fmt(c[1])}</span></span>
+    </div>
+    
+    <!-- Drag split handlers -->
+    <div class="split-handle" id="handleHookDemo" style="left: ${pct(h[1])};" title="Drag to adjust Hook/Demo boundary">
+      <div class="split-tooltip">Hook End: ${h[1].toFixed(1)}s</div>
+    </div>
+    <div class="split-handle" id="handleDemoCta" style="left: ${pct(d[1])};" title="Drag to adjust Demo/CTA boundary">
+      <div class="split-tooltip">Demo End: ${d[1].toFixed(1)}s</div>
+    </div>
+    
+    <div class="waveform-overlay" id="waveformOverlay">${makeWaveformSvg(1000, 36)}</div>
+    <div class="timeline-playhead" id="timelinePlayhead" style="left: 0%;"></div>
+  `;
+  
+  setupSplitHandlers(total);
+}
+
+function setupSplitHandlers(total) {
+  const tl = $('#timelineTrack'); if (!tl) return;
+  const h1 = $('#handleHookDemo'), h2 = $('#handleDemoCta');
+  if (!h1 || !h2) return;
+  
+  function getXTime(clientX) {
+    const r = tl.getBoundingClientRect();
+    return Math.max(0, Math.min(total, ((clientX - r.left) / r.width) * total));
+  }
+  
+  // Hook/Demo divider drag
+  h1.addEventListener('mousedown', e => {
+    e.stopPropagation();
+    e.preventDefault();
+    
+    function onMouseMove(moveEvent) {
+      const t = getXTime(moveEvent.clientX);
+      const demo_end = cur.segments_map.demo[1];
+      const new_hook_end = Math.max(0.2, Math.min(demo_end - 0.5, t));
+      
+      cur.segments_map.hook[1] = new_hook_end;
+      cur.segments_map.demo[0] = new_hook_end;
+      
+      h1.style.left = ((new_hook_end / total) * 100).toFixed(3) + '%';
+      h1.querySelector('.split-tooltip').textContent = `Hook End: ${new_hook_end.toFixed(1)}s`;
+      
+      updateTimelineBands(total);
+    }
+    
+    function onMouseUp() {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      if (cur.transcript) drawSubs(cur.transcript);
+      drawTimeline();
+    }
+    
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  });
+  
+  // Demo/CTA divider drag
+  h2.addEventListener('mousedown', e => {
+    e.stopPropagation();
+    e.preventDefault();
+    
+    function onMouseMove(moveEvent) {
+      const t = getXTime(moveEvent.clientX);
+      const hook_end = cur.segments_map.hook[1];
+      const new_demo_end = Math.max(hook_end + 0.5, Math.min(total - 0.2, t));
+      
+      cur.segments_map.demo[1] = new_demo_end;
+      cur.segments_map.cta[0] = new_demo_end;
+      
+      h2.style.left = ((new_demo_end / total) * 100).toFixed(3) + '%';
+      h2.querySelector('.split-tooltip').textContent = `Demo End: ${new_demo_end.toFixed(1)}s`;
+      
+      updateTimelineBands(total);
+    }
+    
+    function onMouseUp() {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      if (cur.transcript) drawSubs(cur.transcript);
+      drawTimeline();
+    }
+    
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  });
+}
+
+function updateTimelineBands(total) {
+  const sm = cur.segments_map;
+  const w = (a) => (((a[1] - a[0]) / total) * 100).toFixed(3) + '%';
+  const bands = document.querySelectorAll('.timeline-segment-band');
+  if (bands.length === 3) {
+    bands[0].style.width = w(sm.hook);
+    bands[0].querySelector('.segment-time').textContent = `${fmt(sm.hook[0])} - ${fmt(sm.hook[1])}`;
+    
+    bands[1].style.width = w(sm.demo);
+    bands[1].querySelector('.segment-time').textContent = `${fmt(sm.demo[0])} - ${fmt(sm.demo[1])}`;
+    
+    bands[2].style.width = w(sm.cta);
+    bands[2].querySelector('.segment-time').textContent = `${fmt(sm.cta[0])} - ${fmt(sm.cta[1])}`;
+  }
+}
+
+function setupTimeline(){
+  const v=$('#player'), tl=$('#timelineTrack'), lab=$('#timelineTimeLabel'); if(!v) return;
+  
+  v.addEventListener('loadedmetadata',()=>{
+    drawTimeline();
+  });
+  
+  v.addEventListener('timeupdate',()=>{
+    const ph=$('#timelinePlayhead');
+    const sm = cur.segments_map || { hook:[0,5], demo:[5,20], cta:[20,25] };
+    const h = sm.hook, d = sm.demo, c = sm.cta;
+    const T = Math.max(c[1]||0, d[1]||0, h[1]||0) || v.duration || 1.0;
+    
+    if(ph) ph.style.left=Math.min(100, v.currentTime/T*100)+'%';
+    if(lab) lab.textContent=fmt(v.currentTime)+' / '+fmt(T);
+    
+    // Highlight currently playing transcript card
+    document.querySelectorAll('.transcript-paragraph').forEach((el, idx) => {
+      const s = subState[idx];
+      if (s && v.currentTime >= s.start && v.currentTime <= s.end) {
+        if (!el.classList.contains('active')) {
+          el.classList.add('active');
+          el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+      } else {
+        el.classList.remove('active');
+      }
+    });
+  });
+
+  // Direct timeline scrub click-seeking
+  setTimeout(() => {
+    const track = $('#timelineTrack');
+    if (track) {
+      track.addEventListener('mousedown', e => {
+        if (e.target.classList.contains('split-handle') || e.target.parentElement.classList.contains('split-handle')) return;
+        const sm = cur.segments_map || { hook:[0,5], demo:[5,20], cta:[20,25] };
+        const T = Math.max(sm.cta[1]||0, sm.demo[1]||0, sm.hook[1]||0) || v.duration || 1.0;
+        const rect = track.getBoundingClientRect();
+        v.currentTime = Math.max(0, Math.min(T, ((e.clientX - rect.left) / rect.width) * T));
+      });
+    }
+  }, 50);
+}
+
+function togglePlay() {
+  const v = $('#player');
+  const btn = $('#transportPlayBtn');
+  if (v) {
+    if (v.paused) {
+      v.play();
+      btn.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="white"><rect x="4" y="4" width="4" height="16"/><rect x="16" y="4" width="4" height="16"/></svg>';
+    } else {
+      v.pause();
+      btn.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="white"><path d="M8 5v14l11-7z"/></svg>';
+    }
+  }
+}
+
+function seekPlayer(t) {
+  const v = $('#player');
+  if (v) v.currentTime = t;
+}
+
+function setToolTab(tab) {
+  activeToolTab = tab;
+  drawToolsSidebar();
+  document.querySelectorAll('.tool-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+}
+
+function drawToolsSidebar() {
+  const container = $('#toolSidebarPanel');
+  if (!container || !cur) return;
+  
+  const p = cur;
+  const processing = ['pending','queued','analyzing','rendering'].includes(p.status);
+  
+  let headerTitle = "Magic Tools";
+  let contentHtml = "";
+  
+  if (activeToolTab === 'magic') {
+    headerTitle = "🪄 Magic Tools & Exports";
+    contentHtml = processing ? progressHtml(p) : outputsHtml(p);
+  } 
+  else if (activeToolTab === 'brand') {
+    headerTitle = "🎨 Styles & Branding";
+    contentHtml = `
+      <div class="field-group">
+        <label class="field-label">Style Preset</label>
+        ${selectHtml('st_style', STYLES, p.style_preset)}
+      </div>
+      <div class="field-group">
+        <label class="field-label">Font Family</label>
+        <select id="st_font"><option>${esc(p.font_family||'Montserrat')}</option></select>
+      </div>
+      <div class="field-group">
+        <label class="field-label">Transition Style</label>
+        ${selectHtml('st_trans', TRANSITIONS, 'fade')}
+      </div>
+      <div class="field-group">
+        <label class="field-label">Caption Entrance/Exit</label>
+        ${selectHtml('st_anim', ANIMS, 'none')}
+      </div>
+      <div class="field-group" style="margin-top: 8px;">
+        <label class="field-label" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+          <input type="checkbox" id="st_zoom" ${(p.zoom_effect??1)?'checked':''} style="width:auto;margin:0;accent-color:var(--accent);"/>
+          Jump-cut Zoom on Hook/CTA
+        </label>
+      </div>
+      <hr style="border:0;border-top:1px solid var(--border-dark);margin:12px 0;"/>
+      <div class="field-group">
+        <label class="field-label">AI Style Prompt</label>
+        <div style="display:flex;gap:6px">
+          <input type="text" id="st_prompt" placeholder="e.g. neon pink, bouncing text"/>
+          <button class="btn sm" onclick="genPreset()">${IC.spark}</button>
+        </div>
+      </div>
+      <div class="field-group" style="margin-top: 12px;">
+        <label class="field-label">Upload Custom Font (.ttf/.otf)</label>
+        <input type="file" id="se_font_file" accept=".ttf,.otf"/>
+      </div>
+    `;
+    setTimeout(() => {
+      loadFontsInto(p.font_family);
+      const fu = $('#se_font_file');
+      if (fu) {
+        fu.onchange = async function() {
+          if (!this.files[0]) return;
+          const fd = new FormData();
+          fd.append('file', this.files[0]);
+          try {
+            const r = await API.req('/api/fonts', {method:'POST', body:fd});
+            toast('Font added: ' + (r.family_name || ''), 'ok');
+            loadFontsInto(p.font_family);
+          } catch(e) {
+            toast('Font upload failed: ' + e.message, 'err');
+          }
+        };
+      }
+    }, 10);
+  } 
+  else if (activeToolTab === 'track') {
+    headerTitle = "🔀 Clip Order & Assembly";
+    contentHtml = `
+      <div class="field-group">
+        <label class="field-label">Reorder chapters to dynamically re-sequence assembly output</label>
+        <div class="order-list" id="order"></div>
+      </div>
+    `;
+    setTimeout(drawOrder, 10);
+  } 
+  else if (activeToolTab === 'captions') {
+    headerTitle = "✍️ Subtitles Status";
+    contentHtml = `
+      <div class="field-group">
+        <label class="field-label">Transcription Telemetry</label>
+        <div style="font-size:12px;color:var(--text-secondary);display:flex;flex-direction:column;gap:6px;background:var(--panel-light);padding:10px;border-radius:5px;border:1px solid var(--border-dark);">
+          <div>💬 Total Paragraphs: <b>${p.transcript ? p.transcript.length : 0}</b></div>
+          <div>🏷️ Active Speakers: <b>Hook, Demo, CTA</b></div>
+          <div style="margin-top:4px;border-top:1px solid var(--border-dark);padding-top:4px;font-size:11px;color:var(--accent-hover);">💡 Tip: Editing timings on the left changes cuts snapping. Click a script bubble to seek the player.</div>
+        </div>
+      </div>
+    `;
+  }
+  else if (activeToolTab === 'music') {
+    headerTitle = "🎵 Background Music & Ducking";
+    contentHtml = `
+      <div class="field-group">
+        <label class="field-label">Background Audio Track</label>
+        <input type="file" id="st_music" accept=".mp3,.wav,.m4a,.ogg"/>
+        <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;">
+          ${p.bg_music_path ? `🎵 Active Music: <b>${esc(p.bg_music_path)}</b>` : 'No background music uploaded.'}
+        </div>
+      </div>
+      <div class="field-group" style="margin-top:8px;">
+        <label class="field-label">Sidechain Ducking Compression</label>
+        <div style="font-size:11.5px;color:var(--text-secondary);background:var(--panel-light);padding:10px;border-radius:5px;border:1px solid var(--border-dark);">
+          Ducking is automatically set to <b>-15dB</b> on background music track during spoken audio phases to ensure clean voice presence.
+        </div>
+      </div>
+    `;
+    setTimeout(() => {
+      const mu = $('#st_music');
+      if (mu) {
+        mu.onchange = async function() {
+          if (!this.files[0]) return;
+          const fd = new FormData();
+          fd.append('file', this.files[0]);
+          try {
+            toast('Uploading background music...');
+            const r = await API.req(`/api/projects/${p.id}/bg-music`, {method:'POST', body:fd});
+            toast('Background music uploaded successfully!', 'ok');
+            cur.bg_music_path = r.music_path;
+            drawToolsSidebar();
+          } catch(e) {
+            toast('Music upload failed: ' + e.message, 'err');
+          }
+        };
+      }
+    }, 10);
+  }
+  else if (activeToolTab === 'settings') {
+    headerTitle = "⚙️ System Configuration";
+    contentHtml = `<div class="empty"><span class="spinner"></span> Loading settings...</div>`;
+    setTimeout(async () => {
+      try {
+        const s = await API.settings();
+        const llmInfo = s.llm || {};
+        const providers = [
+          ['auto', 'Auto (Claude if key present, else Ollama)'],
+          ['anthropic', 'Claude API (cloud)'],
+          ['ollama', 'Ollama (local)'],
+          ['openai', 'OpenAI-compatible endpoint']
+        ];
+        const provOpts = providers.map(([v, lab]) =>
+          `<option value="${v}" ${v === (s.llm_provider || 'auto') ? 'selected' : ''}>${lab}</option>`).join('');
+        const claudeKeyBadge = llmInfo.anthropic_available
+          ? '<span style="color:var(--ok);">✓ ANTHROPIC_API_KEY detected</span>'
+          : '<span style="color:var(--err);">✗ ANTHROPIC_API_KEY not set (add it to .env to use Claude)</span>';
+        container.querySelector('.tool-panel-content').innerHTML = `
+          <div class="field-group">
+            <label class="field-label">🧠 AI Editorial Brain</label>
+            <select id="se_provider">${provOpts}</select>
+            <div style="font-size:10.5px;color:var(--text-secondary);margin-top:4px;display:flex;flex-direction:column;gap:2px;">
+              <span>Active now: <b style="color:var(--accent-hover);">${esc(llmInfo.active || '?')}</b></span>
+              ${claudeKeyBadge}
+            </div>
+          </div>
+          <div class="field-group">
+            <label class="field-label">Claude Model</label>
+            <input type="text" id="se_claude" value="${esc(s.anthropic_model||'')}" placeholder="claude-sonnet-5"/>
+          </div>
+          <div class="field-group">
+            <label class="field-label">Ollama Edit Model</label>
+            <input type="text" id="se_edit" value="${esc(s.edit_model||'')}"/>
+          </div>
+          <div class="field-group">
+            <label class="field-label">OpenAI-compatible Model</label>
+            <input type="text" id="se_openai" value="${esc(s.openai_model||'')}"/>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:4px;">
+            <button class="btn ghost sm" onclick="testLLM(this)" style="flex:1;">⚡ Test AI Connection</button>
+          </div>
+          <div id="llmTestResult" style="font-size:10.5px;font-family:var(--mono);color:var(--text-secondary);"></div>
+
+          <hr style="border:0;border-top:1px solid var(--border-dark);margin:12px 0;"/>
+          <div class="field-group">
+            <label class="field-label">Vision Model</label>
+            <input type="text" id="se_vision" value="${esc(s.vision_model||'')}"/>
+          </div>
+          <div class="field-group">
+            <label class="field-label">Whisper Model</label>
+            <input type="text" id="se_whisper" value="${esc(s.whisper_model||'')}"/>
+          </div>
+          <button class="btn sm" onclick="saveSettings(this)" style="margin-top: 8px;">Save Settings</button>
+
+          <hr style="border:0;border-top:1px solid var(--border-dark);margin:12px 0;"/>
+          <div class="field-group">
+            <label class="field-label">Storage Usage</label>
+            <div style="font-size:11px;color:var(--text-secondary);margin-bottom:4px;display:flex;justify-content:space-between;">
+              <span>${s.disk_usage ? s.disk_usage.used_gb : '0'} GB Used</span>
+              <span>${s.disk_usage ? s.disk_usage.total_gb : '0'} GB Total</span>
+            </div>
+            <div style="width:100%;height:6px;background:var(--border-dark);border-radius:3px;overflow:hidden;margin-bottom:8px;">
+              <div style="height:100%;width:${s.disk_usage ? s.disk_usage.percent_used : 0}%;background:${(s.disk_usage && s.disk_usage.percent_used > 85) ? 'var(--err)' : 'var(--accent)'};transition:width 0.3s ease;"></div>
+            </div>
+            <button class="btn sm ghost" onclick="doCleanCache(this)" style="margin-top: 4px; border-color: var(--err); color: var(--err); display: block; width: 100%;">🧹 Clean Cache</button>
+          </div>
+          
+          <hr style="border:0;border-top:1px solid var(--border-dark);margin:12px 0;"/>
+          <label class="field-label">Live Telemetry & Notes</label>
+          <div style="font-size:11px;color:var(--text-secondary);display:flex;flex-direction:column;gap:6px;max-height:160px;overflow-y:auto;background:#09090b;padding:8px;border-radius:4px;border:1px solid var(--border-dark);">
+            ${(s.agent_notes || []).map(note => `<div style="border-bottom:1px solid #1a1a1e;padding-bottom:4px;margin-bottom:4px;">💡 ${esc(note)}</div>`).join('')}
+          </div>
+        `;
+      } catch (e) {
+        container.querySelector('.tool-panel-content').innerHTML = `<div style="color:var(--err);">Failed to load settings.</div>`;
+      }
+    }, 10);
+  }
+  
+  container.innerHTML = `
+    <div class="tool-panel-header">${headerTitle}</div>
+    <div class="tool-panel-content">${contentHtml}</div>
+  `;
+}
+
+function progressHtml(p){
+  return `
+    <div style="color:var(--text-secondary);text-align:center;padding:24px 12px;background:var(--panel-light);border-radius:6px;border:1px solid var(--border-dark);">
+      <span class="spinner" style="margin-bottom:8px;"></span>
+      <div style="font-size:12px;font-weight:600;">Processing project cuts...</div>
+      <div style="font-size:11px;color:var(--accent-hover);margin-top:4px;text-transform:uppercase;">${esc(p.status)}</div>
+    </div>`;
+}
+
+function outputsHtml(p){
+  const cuts=p.cuts||{}, ai=p.ai_montages||[];
+  const std=[['5s','5s · Hook'],['15s','15s · Pitch'],['30s','30s · Ad'],['60s','60s · Full'],['custom','Custom order']];
+  
+  let html = '';
+  const have = std.filter(([k])=>cuts[k]||cuts[k+'_raw']);
+  
+  if (have.length) {
+    html += '<div style="font-weight:700;font-size:10px;text-transform:uppercase;color:var(--text-secondary);letter-spacing:1px;margin-bottom:8px;">Standard Cuts</div>';
+    html += have.map(([k, lab]) => {
+      const sub = cuts[k], raw = cuts[k+'_raw'];
+      const prev = sub ? ('/cuts/'+encodeURIComponent(sub)) : (raw ? ('/cuts/'+encodeURIComponent(raw)) : null);
+      
+      return `
+        <div class="out-card">
+          <div class="out-card-header">
+            <span>${lab}</span>
+          </div>
+          ${prev ? `
+            <div style="width:100%;aspect-ratio:16/9;background:#000;border-radius:4px;overflow:hidden;margin:4px 0;">
+              <video src="${prev}" style="width:100%;height:100%;object-fit:contain;" controls preload="none"></video>
+            </div>` : ''}
+          <div class="out-card-actions">
+            ${sub ? `<button class="btn sm" onclick="dl('/api/projects/${p.id}/download/${k}/true')">Subtitled</button>` : ''}
+            ${raw ? `<button class="btn ghost sm" onclick="dl('/api/projects/${p.id}/download/${k}/false')">Raw</button>` : ''}
+          </div>
+        </div>`;
+    }).join('');
+  }
+  
+  if (ai.length) {
+    html += '<div style="font-weight:700;font-size:10px;text-transform:uppercase;color:var(--text-secondary);letter-spacing:1px;margin-top:14px;margin-bottom:8px;">AI Montages</div>';
+    html += ai.map(m => {
+      const prev = m.filename_subbed ? ('/cuts/'+encodeURIComponent(m.filename_subbed)) : (m.filename_raw ? ('/cuts/'+encodeURIComponent(m.filename_raw)) : null);
+      const nm = encodeURIComponent(m.name);
+      
+      return `
+        <div class="out-card">
+          <div class="out-card-header">
+            <span>${esc(m.name)}</span>
+          </div>
+          <div class="out-card-meta">${esc(m.description||'')}</div>
+          ${prev ? `
+            <div style="width:100%;aspect-ratio:16/9;background:#000;border-radius:4px;overflow:hidden;margin:4px 0;">
+              <video src="${prev}" style="width:100%;height:100%;object-fit:contain;" controls preload="none"></video>
+            </div>` : ''}
+          <div class="out-card-actions">
+            ${m.filename_subbed ? `<button class="btn sm" onclick="dl('/api/projects/${p.id}/download-ai/${nm}/true')">Subtitled</button>` : ''}
+            ${m.filename_raw ? `<button class="btn ghost sm" onclick="dl('/api/projects/${p.id}/download-ai/${nm}/false')">Raw</button>` : ''}
+          </div>
+        </div>`;
+    }).join('');
+  }
+  
+  if (!have.length && !ai.length) {
+    return `
+      <div style="color:var(--text-secondary);text-align:center;padding:24px 12px;">
+        No cuts rendered yet. Click the purple <b>Export</b> button in the top header to start rendering.
+      </div>`;
+  }
+  
+  return html;
+}
+
+function selectHtml(id,opts,val){ return `<select id="${id}">${opts.map(o=>`<option ${o===val?'selected':''}>${esc(o)}</option>`).join('')}</select>`; }
+
+function drawOrder(){
+  const box=$('#order'); if(!box) return;
+  box.innerHTML=curOrder.map((nm,i)=>`
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--panel-light);border:1px solid var(--border-dark);border-radius:5px;padding:6px 10px;margin-bottom:6px;">
+      <span style="font-family:var(--mono);color:var(--accent);font-weight:700;font-size:11px;">#${i+1}</span>
+      <span style="flex:1;font-weight:600;font-size:12px;">${esc(nm)}</span>
+      <div style="display:flex;gap:4px;">
+        <button class="btn ghost sm" style="padding:2px 6px;" ${i===0?'disabled':''} onclick="moveOrder(${i},-1)">↑</button>
+        <button class="btn ghost sm" style="padding:2px 6px;" ${i===curOrder.length-1?'disabled':''} onclick="moveOrder(${i},1)">↓</button>
+      </div>
+    </div>`).join('');
+}
+
+function moveOrder(i,d){ const j=i+d; if(j<0||j>=curOrder.length)return; const a=curOrder.slice(); [a[i],a[j]]=[a[j],a[i]]; curOrder=a; drawOrder(); }
+
+function cycleSpeakerTag(i) {
+  const currentSpeaker = subState[i].speaker || 'Hook';
+  let nextSpeaker = 'Demo';
+  if (currentSpeaker === 'Demo') nextSpeaker = 'CTA';
+  else if (currentSpeaker === 'CTA') nextSpeaker = 'Hook';
+  
+  subState[i].speaker = nextSpeaker;
+  
+  // Re-calculate the boundary timings based on paragraph assignments
+  recalculateBoundariesFromTags();
+}
+
+function recalculateBoundariesFromTags() {
+  const v = $('#player');
+  let total = v ? v.duration : 30.0;
+  if (!isFinite(total) || total <= 0) {
+    const sm = cur.segments_map || { cta:[0,30] };
+    total = sm.cta[1] || 30.0;
+  }
+  
+  let lastHookTime = 0.0;
+  let lastDemoTime = 0.0;
+  
+  subState.forEach(s => {
+    if (s.speaker === 'Hook') {
+      if (s.end > lastHookTime) lastHookTime = s.end;
+    } else if (s.speaker === 'Demo') {
+      if (s.end > lastDemoTime) lastDemoTime = s.end;
+    }
+  });
+  
+  // Keep boundaries in chronological logical order
+  if (lastHookTime <= 0) lastHookTime = Math.min(5.0, total * 0.2);
+  if (lastDemoTime <= lastHookTime) lastDemoTime = Math.max(lastHookTime + 0.5, total * 0.8);
+  if (lastDemoTime >= total) lastDemoTime = total - 0.2;
+  
+  cur.segments_map = {
+    hook: [0.0, lastHookTime],
+    demo: [lastHookTime, lastDemoTime],
+    cta: [lastDemoTime, total]
+  };
+  
+  // Redraw views to reflect changes
+  drawSubsState();
+  drawTimeline();
+}
+
+function drawSubs(transcript){
+  const sm = cur && cur.segments_map || { hook: [0.0, 5.0], demo: [5.0, 20.0], cta: [20.0, 25.0] };
+  const hook_end = sm.hook ? sm.hook[1] : 5.0;
+  const demo_end = sm.demo ? sm.demo[1] : 20.0;
+  
+  subState = transcript.map(s => {
+    let speaker = 'Hook';
+    const start = +s.start;
+    if (start >= demo_end) speaker = 'CTA';
+    else if (start >= hook_end) speaker = 'Demo';
+    
+    return {
+      start: start,
+      end: +s.end,
+      text: s.text,
+      words: s.words || null,
+      orig: s.text,
+      speaker: speaker
+    };
+  });
+  
+  drawSubsState();
+}
+
+function drawSubsState() {
+  const box=$('#transcriptContent'); if(!box) return;
+  
+  box.innerHTML = subState.map((s,i)=>{
+    let cardClass = 'hook-card';
+    let tagClass = 'hook';
+    if (s.speaker === 'CTA') {
+      tagClass = 'cta';
+      cardClass = 'cta-card';
+    } else if (s.speaker === 'Demo') {
+      tagClass = 'demo';
+      cardClass = 'demo-card';
+    }
+    
+    return `
+      <div class="transcript-paragraph ${cardClass}">
+        <div class="paragraph-meta">
+          <span class="meta-tag ${tagClass}" onclick="cycleSpeakerTag(${i})" title="Click to cycle Hook -> Demo -> CTA">${s.speaker}</span>
+          <div style="display:flex;align-items:center;gap:4px">
+            <input type="number" step="0.1" class="time-badge-input" value="${s.start.toFixed(1)}" onchange="subState[${i}].start=parseFloat(this.value); recalculateBoundariesFromTags();"/>
+            <span style="color:var(--text-secondary)">-</span>
+            <input type="number" step="0.1" class="time-badge-input" value="${s.end.toFixed(1)}" onchange="subState[${i}].end=parseFloat(this.value); recalculateBoundariesFromTags();"/>
+          </div>
+        </div>
+        <div class="paragraph-editor">
+          <textarea class="paragraph-textarea" rows="2" 
+                    onclick="seekPlayer(${s.start})" 
+                    onchange="subState[${i}].text=this.value">${esc(s.text)}</textarea>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function filterTranscript() {
+  const input = $('#scriptSearch'); if (!input) return;
+  const query = input.value.toLowerCase();
+  document.querySelectorAll('.transcript-paragraph').forEach((el, idx) => {
+    const text = subState[idx].text.toLowerCase();
+    el.style.display = text.includes(query) ? '' : 'none';
+  });
+}
+
+async function loadFontsInto(current){
+  const sel=$('#st_font'); if(!sel) return;
+  const defaults=['Montserrat','Arial','Impact','Bebas Neue','Roboto','Oswald'];
+  let custom=[]; try{ custom=(await API.fonts()).map(f=>f.family_name); }catch(e){}
+  const all=[...new Set([current||'Montserrat',...defaults,...custom])];
+  sel.innerHTML=all.map(f=>`<option ${f===(current||'Montserrat')?'selected':''}>${esc(f)}</option>`).join('');
+}
+
+async function genPreset(){
+  const prompt=$('#st_prompt').value.trim(); if(!prompt){ toast('Describe a style first.','err'); return; }
+  toast('Generating style with AI…');
+  try{ await API.aiPreset(cur.id, prompt); toast('Custom style saved — used on next render.','ok'); }
+  catch(e){ toast('Style gen failed: '+e.message,'err'); }
+}
+
+async function doRender(){
+  if(!cur) return;
+  const btn=$('#exportBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> EXPORTING...';
+  }
+  try{
+    const st_style = $('#st_style') ? $('#st_style').value : cur.style_preset;
+    const st_font = $('#st_font') ? $('#st_font').value : cur.font_family;
+    const st_trans = $('#st_trans') ? $('#st_trans').value : 'fade';
+    const st_anim = $('#st_anim') ? $('#st_anim').value : 'none';
+    const st_zoom = $('#st_zoom') ? $('#st_zoom').checked : true;
+    const segments_map = cur.segments_map;
+
+    await API.saveSettings({ transition_style:st_trans, subtitle_animation:st_anim });
+    const transcript = subState.map(s=>{ const o={start:s.start,end:s.end,text:s.text}; if(s.words && s.text===s.orig) o.words=s.words; return o; });
+    await API.render(cur.id, { 
+      transcript, 
+      style_preset:st_style, 
+      order:curOrder, 
+      font_family:st_font, 
+      zoom_effect:st_zoom?1:0,
+      segments_map
+    });
+    
+    toast('Render started — outputs refresh when ready.','ok');
+    cur.status='rendering';
+    drawToolsSidebar();
+    stopPoll(); poll=setInterval(()=>refreshDetail(cur.id,false),3500);
+  }catch(e){ 
+    toast('Render failed: '+e.message,'err');
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = 'EXPORT';
+    }
+  }
+}
+
+async function saveSettings(btn){
+  const s = {
+    vision_model: $('#se_vision').value,
+    edit_model: $('#se_edit').value,
+    whisper_model: $('#se_whisper').value
+  };
+  if ($('#se_provider')) s.llm_provider = $('#se_provider').value;
+  if ($('#se_claude')) s.anthropic_model = $('#se_claude').value;
+  if ($('#se_openai')) s.openai_model = $('#se_openai').value;
+  btn.disabled = true;
+  btn.innerHTML = 'Saving...';
+  try{
+    await API.saveSettings(s);
+    toast('Settings saved.', 'ok');
+  } catch(e) {
+    toast('Save failed: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = 'Save Settings';
+  }
+}
+
+async function testLLM(btn){
+  const out = $('#llmTestResult');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Testing...';
+  try {
+    // Persist the provider choice first so the test hits what the user picked.
+    if ($('#se_provider')) {
+      await API.saveSettings({
+        llm_provider: $('#se_provider').value,
+        anthropic_model: $('#se_claude') ? $('#se_claude').value : undefined,
+        openai_model: $('#se_openai') ? $('#se_openai').value : undefined,
+        edit_model: $('#se_edit') ? $('#se_edit').value : undefined
+      });
+    }
+    const r = await API.req('/api/llm/test', {method:'POST'});
+    if (r.ok) {
+      if (out) out.innerHTML = `<span style="color:var(--ok);">✓ ${esc(r.provider)} / ${esc(r.model||'')} replied: "${esc(r.reply||'')}"</span>`;
+      toast(`AI connection OK via ${r.provider}.`, 'ok');
+    } else {
+      if (out) out.innerHTML = `<span style="color:var(--err);">✗ ${esc(r.provider)}: ${esc(r.error||'unknown error')}</span>`;
+      toast('AI connection failed: ' + (r.error||''), 'err');
+    }
+  } catch(e) {
+    if (out) out.innerHTML = `<span style="color:var(--err);">✗ ${esc(e.message)}</span>`;
+    toast('AI test failed: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '⚡ Test AI Connection';
+  }
+}
+
+async function doStopRender() {
+  if(!cur) return;
+  if(!confirm('Are you sure you want to stop the current rendering and queue processes for this project?')) return;
+  const btn = $('#stopBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> STOPPING...';
+  try {
+    await API.req(`/api/projects/${cur.id}/stop`, {method: 'POST'});
+    toast('Render process stopped successfully.', 'ok');
+    await refreshDetail(cur.id, true);
+  } catch(e) {
+    toast('Failed to stop: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = 'STOP';
+  }
+}
+
+async function doCleanCache(btn) {
+  if(!confirm('Are you sure you want to clean up cuts cache? This will delete all rendered standard cuts and temporary video files.')) return;
+  btn.disabled = true;
+  btn.textContent = 'Cleaning...';
+  try {
+    const res = await API.req('/api/clean-cache', {method: 'POST'});
+    toast(`Successfully cleaned up cache! Freed ${res.freed_mb} MB.`, 'ok');
+  } catch (e) {
+    toast('Failed to clean cache: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🧹 Clean Cache';
+  }
+}
+
+/* ---------------- boot ---------------- */
+async function loadAIEngineBadge(){
+  const badge = $('#aiEngineBadge'); if(!badge) return;
+  try {
+    const h = await API.req('/api/health');
+    const name = h.llm_provider === 'anthropic' ? 'CLAUDE' : String(h.llm_provider||'?').toUpperCase();
+    badge.textContent = 'AI: ' + name;
+    badge.title = `Active AI editorial provider: ${h.llm_provider} (v${h.version||''})`;
+  } catch(e) { badge.textContent = 'AI: OFFLINE'; badge.style.color = 'var(--err)'; }
+}
+
+(function(){
+  ensureWS();
+  loadAIEngineBadge();
+  const h=location.hash;
+  if(h.startsWith('#p')){ const id=parseInt(h.slice(2),10); if(id) return openProject(id); }
+  renderHome();
+})();
+</script>
+</body>
+</html>

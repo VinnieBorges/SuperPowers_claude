@@ -1,0 +1,14 @@
+# Runtime data — created next to the code on first boot
+raw/
+cuts/
+database/
+watch/
+auto_cuts/
+fonts/
+frontend/dist/
+
+# Environment / tooling
+.env
+.venv/
+__pycache__/
+*.pyc
