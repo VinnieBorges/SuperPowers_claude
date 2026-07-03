@@ -24,6 +24,23 @@ creative montage variations with marketing rationale, AI subtitle style presets,
 and the Whisper self-improvement loop. Switch providers and **Test AI Connection**
 live from Settings (⚙️) — no restart needed.
 
+### 🖥 Redesigned studio interface
+The dashboard was rebuilt as a proper editing tool: dense project table with live
+status and inline progress, three-pane studio view (captions / monitor / inspector)
+with a draggable segment timeline, keyboard transport (Space to play, arrow keys to
+seek), real diagnostic modals instead of browser alerts, and zero external
+dependencies — system fonts only, fully offline. The AI engine (Claude or local)
+is switchable from the System panel with one-click connection testing.
+
+### ✅ Self-test suite
+`run.bat test` (or `python tests/run_tests.py`) runs 16 checks: pure-logic unit
+tests plus real FFmpeg renders over synthetic fixtures covering every shape users
+upload — landscape 16:9 with audio, portrait 9:16 with no audio track and no
+speech, a 2-second micro clip, a square video with a hostile filename
+(apostrophe/&/unicode), reordered montage variations with crossfades, and corrupt
+files (which must fail fast with a clear message). Tests run in an isolated temp
+workspace and never touch your real database or media.
+
 ### 🛠 Reliability & pipeline fixes
 - **New `ai_editor.py`** with strict JSON validation and clamping — malformed model
   output can never reach FFmpeg; a deterministic fallback plan always exists.
@@ -42,18 +59,19 @@ live from Settings (⚙️) — no restart needed.
 - Central `config.py` (+ `.env` support), proper logging, DB indexes and safe
   in-place schema migrations.
 
-## Quick start
+## Quick start (Windows)
 
-1. **Configure** — copy `.env.example` to `.env`, paste your `ANTHROPIC_API_KEY`
-   (or skip it to stay fully local with Ollama).
-2. **Launch** — double-click `run.bat` (Windows) or:
-   ```bash
-   pip install -r requirements.txt
-   python main.py
-   ```
-3. Open `http://127.0.0.1:8000`, drag a video in, watch it process.
+1. **Launch** — double-click `run.bat`. First run creates the virtualenv,
+   installs dependencies, creates `.env` from the template, and opens the app
+   at `http://127.0.0.1:8000`.
+2. **Enable Claude** *(optional)* — edit `.env` and paste your
+   `ANTHROPIC_API_KEY` (from console.anthropic.com), then restart. Without a
+   key the app runs fully local via Ollama.
+3. **Verify** — `run.bat test` runs the 16-check self-test suite.
 
-FFmpeg + FFprobe must be on PATH (or set `VINICUT_FFMPEG` / `VINICUT_FFPROBE`).
+FFmpeg + FFprobe must be on PATH (`winget install Gyan.FFmpeg`), or set
+`VINICUT_FFMPEG` / `VINICUT_FFPROBE`. Linux/macOS: `pip install -r
+requirements.txt && python main.py`.
 
 ## How the pipeline works
 

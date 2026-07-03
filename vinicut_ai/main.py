@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 import queue
+import re
 import shutil
 import threading
 import time
@@ -48,6 +49,10 @@ UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1 MiB
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     resume_interrupted_projects()
+    bins = render_engine.check_binaries()
+    if not (bins.get("ffmpeg") and bins.get("ffprobe")):
+        log.error("FFmpeg/FFprobe NOT FOUND — rendering will fail until installed. "
+                  "Windows: winget install Gyan.FFmpeg (then restart the app).")
     broadcast_task = asyncio.create_task(broadcast_loop())
     cleanup_task = asyncio.create_task(automated_cleanup_loop())
     threading.Thread(target=sequential_queue_worker, daemon=True, name="queue-worker").start()
@@ -292,6 +297,19 @@ def sequential_queue_worker():
                 set_project_status(project_id, "failed", error=f"Source file missing: {filename}")
                 continue
 
+            # Fail fast on unreadable sources BEFORE spending minutes in Whisper.
+            total_dur = processor.get_video_duration(video_path)
+            if total_dur <= 0.0:
+                bins = render_engine.check_binaries()
+                if not (bins.get("ffmpeg") and bins.get("ffprobe")):
+                    err = ("FFmpeg/FFprobe not found on this machine. Install FFmpeg "
+                           "(winget install Gyan.FFmpeg) or set VINICUT_FFMPEG / VINICUT_FFPROBE.")
+                else:
+                    err = (f"Could not read '{filename}' — the file appears corrupt, "
+                           "still uploading, or uses an unsupported codec.")
+                set_project_status(project_id, "failed", error=err)
+                continue
+
             # Step 1: transcription
             set_project_status(project_id, "analyzing", progress=0)
             try:
@@ -302,7 +320,6 @@ def sequential_queue_worker():
                 transcription = [{"start": 0.0, "end": 5.0, "text": "Failed to transcribe."}]
 
             # Step 2: AI editorial analysis (Claude / Ollama via llm.py)
-            total_dur = processor.get_video_duration(video_path)
             try:
                 ai_data = ai_editor.analyze_transcript_and_segment(transcription, total_dur)
             except Exception as e:
@@ -419,7 +436,9 @@ def render_ai_variations(project_id, filename, video_path, transcription, segmen
 
             dur_name = f"{var_name} ({dur}s)"
             dur_desc = f"{var_desc} ({dur}s variation)"
-            safe_name = var_name.replace(" ", "_").replace("/", "_")
+            # Strict filesystem slug: AI-invented names like "Editor's Pick!"
+            # must never leak quotes/punctuation into FFmpeg filter paths.
+            safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", var_name).strip("_") or "variation"
             sub_path = os.path.join(database.CUTS_DIR, f"project_{project_id}_ai_montage_{safe_name}_{dur}s_subbed.mp4")
             raw_path = os.path.join(database.CUTS_DIR, f"project_{project_id}_ai_montage_{safe_name}_{dur}s_raw.mp4")
 
@@ -1251,7 +1270,12 @@ async def upload_bg_music(project_id: int, file: UploadFile = File(...)):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": APP_VERSION, "llm_provider": llm.active_provider()}
+    return {
+        "status": "ok",
+        "version": APP_VERSION,
+        "llm_provider": llm.active_provider(),
+        "ffmpeg": render_engine.check_binaries(),
+    }
 
 
 @app.get("/api/settings")

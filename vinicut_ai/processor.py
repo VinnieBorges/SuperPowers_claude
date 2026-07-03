@@ -56,12 +56,14 @@ def extract_keyframes(video_path, output_dir, interval=2.0):
     os.makedirs(output_dir, exist_ok=True)
     pattern = os.path.join(output_dir, "frame_%03d.jpg")
 
-    # We extract 1 frame every 'interval' seconds and downscale to max width 384px (preserving aspect ratio)
-    command = f'ffmpeg -i "{video_path}" -vf "fps=1/{interval},scale=384:-1" -q:v 3 -y "{pattern}"'
-
-    # Import FFMPEG path refresh from render_engine env
-    from render_engine import get_ffmpeg_env
-    subprocess.run(command, shell=True, capture_output=True, env=get_ffmpeg_env())
+    # We extract 1 frame every 'interval' seconds and downscale to max width
+    # 384px (preserving aspect ratio). Argument-list form (shell=False) keeps
+    # filenames with spaces/quotes/& intact.
+    render_engine.run_command(
+        [render_engine.FFMPEG_BIN, "-i", video_path,
+         "-vf", f"fps=1/{interval},scale=384:-1", "-q:v", "3", "-y", pattern],
+        desc="Keyframe extraction", check=False,
+    )
 
     frames = [os.path.join(output_dir, f) for f in os.listdir(output_dir) if f.endswith(".jpg")]
     frames.sort()
@@ -464,63 +466,79 @@ def _render_final_cuts_impl(conn, project_id, filename, original_video_path, seg
     # Auto cuts output directory (daily subfolder)
     from datetime import datetime
     date_str = datetime.now().strftime("%Y-%m-%d")
-    auto_cuts_dir = os.path.join(BASE_DIR, "auto_cuts", f"edits_{date_str}")
+    auto_cuts_dir = os.path.join(config.AUTO_CUTS_DIR, f"edits_{date_str}")
     os.makedirs(auto_cuts_dir, exist_ok=True)
     base_name = os.path.splitext(filename)[0]
 
+    failed_durations = []
     for idx, dur in enumerate(durations):
-        # 1. Raw cut (no subtitles). return_slices reports exactly which source
-        #    ranges + transition plan were used so captions can be placed on the
-        #    cut's own (shorter, possibly xfade-overlapped) output timeline.
-        cut_filename_raw = f"project_{project_id}_cut_{dur}s_raw.mp4"
-        cut_path_raw = os.path.join(CUTS_DIR, cut_filename_raw)
-        _, slice_info = render_engine.make_semantic_cut(
-            original_video_path, seg_dict, dur, cut_path_raw,
-            segments=segments, zoom_effect=zoom_effect, bg_music_path=bg_music_path,
-            transition=transition_style, transition_duration=transition_duration,
-            total_dur=total_dur, return_slices=True, progress_callback=get_step_cb(idx * 2)
-        )
-        cut_paths[f"{dur}s_raw"] = cut_path_raw
-        cursor.execute("""
-            INSERT INTO cuts (project_id, cut_type, start_time, end_time, filepath)
-            VALUES (?, ?, ?, ?, ?)
-        """, (project_id, f"{dur}s_raw", 0.0, float(dur), cut_path_raw))
-
-        # 2. Subtitled cut: burn the shifted captions onto the SHORT raw cut
-        #    (replaces the old whole-source burn).
-        cut_filename = f"project_{project_id}_cut_{dur}s.mp4"
-        cut_path = os.path.join(CUTS_DIR, cut_filename)
-        shifted_subs = shift_subtitles_for_slices(
-            segments, slice_info["slices"], slice_info["use_xfade"], slice_info["trans_d"]
-        )
-        if shifted_subs:
-            cut_ass_path = os.path.join(CUTS_DIR, f"project_{project_id}_cut_{dur}s.ass")
-            generate_ass_file(shifted_subs, style_preset, cut_ass_path, font_family=font_family, animation=animation, fade_ms=fade_ms, slices=slice_info["slices"], use_xfade=slice_info["use_xfade"], trans_d=slice_info["trans_d"])
-            try:
-                cut_path = render_engine.render_subtitles(
-                    cut_path_raw, cut_ass_path, cut_path,
-                    progress_callback=get_step_cb(idx * 2 + 1),
-                    duration=get_video_duration(cut_path_raw)
-                )
-            except Exception as burn_err:
-                log.warning("Subtitle burn failed for %ss cut, using raw as fallback: %s", dur, burn_err)
-                shutil.copy2(cut_path_raw, cut_path)
-        else:
-            # No captions overlap this cut; subbed == raw.
-            shutil.copy2(cut_path_raw, cut_path)
-        cut_paths[dur] = cut_path
-        cursor.execute("""
-            INSERT INTO cuts (project_id, cut_type, start_time, end_time, filepath)
-            VALUES (?, ?, ?, ?, ?)
-        """, (project_id, f"{dur}s", 0.0, float(dur), cut_path))
-
-        # Auto-copy raw cuts to watch outputs
-        dest_name = f"{base_name}_{dur}s_raw.mp4"
-        dest_path = os.path.join(auto_cuts_dir, dest_name)
+        # Each duration is rendered independently: one failing target (e.g. a
+        # filter-graph edge case at 5s) must not abort the 15/30/60s cuts.
         try:
-            shutil.copy2(cut_path_raw, dest_path)
-        except Exception as cp_err:
-            log.warning("Error copying raw cut to auto_cuts: %s", cp_err)
+            # 1. Raw cut (no subtitles). return_slices reports exactly which source
+            #    ranges + transition plan were used so captions can be placed on the
+            #    cut's own (shorter, possibly xfade-overlapped) output timeline.
+            cut_filename_raw = f"project_{project_id}_cut_{dur}s_raw.mp4"
+            cut_path_raw = os.path.join(CUTS_DIR, cut_filename_raw)
+            _, slice_info = render_engine.make_semantic_cut(
+                original_video_path, seg_dict, dur, cut_path_raw,
+                segments=segments, zoom_effect=zoom_effect, bg_music_path=bg_music_path,
+                transition=transition_style, transition_duration=transition_duration,
+                total_dur=total_dur, return_slices=True, progress_callback=get_step_cb(idx * 2)
+            )
+            if not os.path.exists(cut_path_raw):
+                raise RuntimeError(f"FFmpeg produced no output for the {dur}s cut.")
+            cut_paths[f"{dur}s_raw"] = cut_path_raw
+            cursor.execute("""
+                INSERT INTO cuts (project_id, cut_type, start_time, end_time, filepath)
+                VALUES (?, ?, ?, ?, ?)
+            """, (project_id, f"{dur}s_raw", 0.0, float(dur), cut_path_raw))
+
+            # 2. Subtitled cut: burn the shifted captions onto the SHORT raw cut
+            #    (replaces the old whole-source burn).
+            cut_filename = f"project_{project_id}_cut_{dur}s.mp4"
+            cut_path = os.path.join(CUTS_DIR, cut_filename)
+            shifted_subs = shift_subtitles_for_slices(
+                segments, slice_info["slices"], slice_info["use_xfade"], slice_info["trans_d"]
+            )
+            if shifted_subs:
+                cut_ass_path = os.path.join(CUTS_DIR, f"project_{project_id}_cut_{dur}s.ass")
+                generate_ass_file(shifted_subs, style_preset, cut_ass_path, font_family=font_family, animation=animation, fade_ms=fade_ms, slices=slice_info["slices"], use_xfade=slice_info["use_xfade"], trans_d=slice_info["trans_d"])
+                try:
+                    cut_path = render_engine.render_subtitles(
+                        cut_path_raw, cut_ass_path, cut_path,
+                        progress_callback=get_step_cb(idx * 2 + 1),
+                        duration=get_video_duration(cut_path_raw)
+                    )
+                except Exception as burn_err:
+                    log.warning("Subtitle burn failed for %ss cut, using raw as fallback: %s", dur, burn_err)
+                    shutil.copy2(cut_path_raw, cut_path)
+            else:
+                # No captions overlap this cut; subbed == raw.
+                shutil.copy2(cut_path_raw, cut_path)
+            cut_paths[dur] = cut_path
+            cursor.execute("""
+                INSERT INTO cuts (project_id, cut_type, start_time, end_time, filepath)
+                VALUES (?, ?, ?, ?, ?)
+            """, (project_id, f"{dur}s", 0.0, float(dur), cut_path))
+
+            # Auto-copy raw cuts to watch outputs
+            dest_name = f"{base_name}_{dur}s_raw.mp4"
+            dest_path = os.path.join(auto_cuts_dir, dest_name)
+            try:
+                shutil.copy2(cut_path_raw, dest_path)
+            except Exception as cp_err:
+                log.warning("Error copying raw cut to auto_cuts: %s", cp_err)
+        except Exception as dur_err:
+            failed_durations.append(dur)
+            log.error("Rendering the %ss cut failed; continuing with remaining durations: %s", dur, dur_err)
+
+    if len(failed_durations) == len(durations):
+        # Nothing rendered at all — this is a real failure the user must see.
+        raise RuntimeError(
+            f"All standard cuts failed to render (durations {failed_durations}). "
+            "Check that the source video is readable and FFmpeg is installed."
+        )
 
     # Render custom reordered cut if requested
     if order:

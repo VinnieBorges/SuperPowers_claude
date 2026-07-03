@@ -87,8 +87,18 @@ def _run_process(args, progress_callback=None, duration=None):
     target duration are provided, FFmpeg's stderr is followed line-by-line and
     `time=HH:MM:SS.cs` stamps are converted into a 0-100 percentage.
     """
-    p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                         text=True, env=get_ffmpeg_env())
+    try:
+        p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             text=True, env=get_ffmpeg_env())
+    except FileNotFoundError:
+        # Binary missing: surface it like any failed run so check=False callers
+        # (ffprobe checks, best-effort cuts) degrade instead of crashing.
+        msg = (
+            f"'{args[0]}' was not found. Install FFmpeg and make sure it is on PATH, "
+            "or point VINICUT_FFMPEG / VINICUT_FFPROBE at the binaries."
+        )
+        log.error(msg)
+        return subprocess.CompletedProcess(args, 127, "", msg)
     _register(p)
     try:
         if progress_callback and duration:
@@ -142,6 +152,15 @@ def run_command(args, desc="ffmpeg", check=True, progress_callback=None, duratio
             f"stderr:\n{(result.stderr or '').strip()}"
         )
     return result
+
+
+def check_binaries():
+    """Reports whether the configured ffmpeg/ffprobe binaries actually run."""
+    status = {}
+    for name, binary in (("ffmpeg", FFMPEG_BIN), ("ffprobe", FFPROBE_BIN)):
+        res = _run_process([binary, "-version"])
+        status[name] = res.returncode == 0
+    return status
 
 
 
@@ -574,17 +593,31 @@ def escape_ass_path(path):
 def render_subtitles(video_path, ass_path, output_path, progress_callback=None, duration=None):
     """Burns ASS subtitles into the video using h264_nvenc hardware acceleration."""
     video_path, is_temp = ensure_audio_stream(video_path)
+    temp_ass = None
     try:
-        escaped_ass = escape_ass_path(ass_path)
+        # The subtitles filter wraps its path in single quotes; a literal quote
+        # inside the path (e.g. C:/Users/Vinnie's PC/...) would break parsing.
+        # Burn from a quote-free temp copy in that case.
+        if "'" in ass_path:
+            import tempfile
+            import uuid
+            temp_ass = os.path.join(tempfile.gettempdir(), f"vinicut_{uuid.uuid4().hex}.ass")
+            import shutil as _shutil
+            _shutil.copy2(ass_path, temp_ass)
+            escaped_ass = escape_ass_path(temp_ass)
+        else:
+            escaped_ass = escape_ass_path(ass_path)
 
         # Locate custom fonts folder
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        fonts_dir = os.path.join(base_dir, "fonts").replace("\\", "/")
+        fonts_dir = config.FONTS_DIR.replace("\\", "/")
 
-        if os.path.exists(fonts_dir) and os.listdir(fonts_dir):
+        if os.path.exists(fonts_dir) and os.listdir(fonts_dir) and "'" not in fonts_dir:
             escaped_fonts = fonts_dir.replace(":", "\\:")
             vf = f"subtitles='{escaped_ass}':fontsdir='{escaped_fonts}'"
         else:
+            if "'" in fonts_dir:
+                log.warning("Fonts dir path contains a quote; burning without fontsdir "
+                            "(custom fonts unavailable): %s", fonts_dir)
             vf = f"subtitles='{escaped_ass}'"
 
         args = [
@@ -599,6 +632,11 @@ def render_subtitles(video_path, ass_path, output_path, progress_callback=None, 
         if is_temp:
             try:
                 os.remove(video_path)
+            except Exception:
+                pass
+        if temp_ass:
+            try:
+                os.remove(temp_ass)
             except Exception:
                 pass
     return output_path
