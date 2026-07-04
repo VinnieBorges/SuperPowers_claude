@@ -5,6 +5,37 @@ AI-powered short-form video factory: drop raw UGC footage in, get retention-opti
 **Hook / Demo / CTA**, re-ordered into montage variations, and burned with karaoke-style
 captions. Now with a **Claude-powered editorial brain**.
 
+## What's new in v2.1 — high-end cutter upgrade
+
+- **Framing engine (fixes wide-footage cropping)** — sources that aren't 9:16 are no
+  longer blindly center-cropped. `auto` gently crops near-portrait footage and
+  blur-fits wide footage (blurred, darkened canvas behind the full frame);
+  `crop` / `fit_blur` / `fit_black` selectable per project in Style & Framing.
+- **Silence jump-cuts** — silent gaps between words are skipped automatically
+  (configurable threshold), giving cuts the tight pacing of professional
+  short-form edits. Toggle in Style & Framing.
+- **Broadcast audio mastering** — every deliverable is loudness-normalized to
+  -14 LUFS (the TikTok/Reels/Shorts standard) with true-peak limiting.
+- **Real encoder quality** — NVENC VBR CQ rate control (CRF on CPU fallback),
+  guaranteed yuv420p, constant 30 fps, 48 kHz audio, and `+faststart` so files
+  stream instantly.
+- **AI virality scores** — every montage variation gets a 0-100 retention
+  estimate from the AI, shown as a badge on its deliverable card.
+- **Marketing copy pack** — one click generates alternative hooks, TikTok and
+  Instagram captions, hashtags and CTA lines in the video's own language
+  (new Copy tab, with copy-to-clipboard).
+- **Real waveform timeline** — the editor timeline now shows the actual audio
+  peaks of your footage (cached server-side).
+- **Poster thumbnails** — deliverable previews show a real frame instantly.
+- **Delete & Retry** — remove a project and all its files, or requeue a failed
+  one, right from the project table.
+- **Parallel workers** — set `VINICUT_WORKERS=2` (or 3) in `.env` to process
+  multiple projects at once on GPUs with spare NVENC sessions.
+- **Forced transcription language** — set `pt`, `en`, etc. in System settings
+  for better accuracy on noisy audio ("auto" detects per video).
+- Smarter AI prompting: the transcript sent to Claude now carries silence-gap
+  annotations, measurably improving boundary picks.
+
 ## What's new in v2.0
 
 ### 🧠 Claude API integration (pluggable AI providers)

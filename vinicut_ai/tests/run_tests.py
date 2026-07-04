@@ -201,6 +201,44 @@ def t_ass_generation_edge_cases():
     assert "fscx120" in open(out, encoding="utf-8").read()
 
 
+def t_framing_resolution():
+    # Explicit modes pass through.
+    assert render_engine.resolve_framing("crop", src_dims=(1920, 1080)) == "crop"
+    assert render_engine.resolve_framing("fit_blur", src_dims=(720, 1280)) == "fit_blur"
+    assert render_engine.resolve_framing("fit_black", src_dims=(720, 1280)) == "fit_black"
+    # Auto: portrait-ish -> gentle crop; wide/square -> blur fit (never butcher composition).
+    assert render_engine.resolve_framing("auto", src_dims=(720, 1280)) == "crop"     # 9:16
+    assert render_engine.resolve_framing("auto", src_dims=(1080, 1620)) == "crop"    # 2:3, sliver trim
+    assert render_engine.resolve_framing("auto", src_dims=(960, 960)) == "fit_blur"  # square
+    assert render_engine.resolve_framing("auto", src_dims=(1920, 1080)) == "fit_blur"  # landscape
+    # Unknown dims -> safe default.
+    assert render_engine.resolve_framing("auto", src_dims=(0, 0)) == "crop"
+
+
+def t_silence_split_logic():
+    segs = [{"start": 0, "end": 10, "text": "x", "words": [
+        {"word": "a", "start": 0.2, "end": 0.6},
+        {"word": "b", "start": 0.7, "end": 1.1},
+        {"word": "c", "start": 3.0, "end": 3.5},
+    ]}]
+    out = render_engine.split_slices_on_silence([(0.0, 4.0, "hook")], segs, min_gap=0.45)
+    assert len(out) == 2, out
+    assert out[0][0] >= 0.0 and out[0][1] <= 1.3
+    assert out[1][0] >= 2.8 and out[1][2] == "hook"
+    # A slice with no speech (b-roll) must be kept whole.
+    assert render_engine.split_slices_on_silence([(5.0, 8.0, "demo")], segs) == [(5.0, 8.0, "demo")]
+    # No transcript at all -> unchanged.
+    assert render_engine.split_slices_on_silence([(0.0, 4.0, "hook")], []) == [(0.0, 4.0, "hook")]
+
+
+def t_loudnorm_append():
+    parts = []
+    label = render_engine.append_loudnorm(parts, "[a_concat]", True)
+    assert label == "[a_master]" and "loudnorm" in parts[0] and parts[0].startswith("[a_concat]")
+    parts = []
+    assert render_engine.append_loudnorm(parts, "[a_concat]", False) == "[a_concat]" and not parts
+
+
 def t_db_settings_roundtrip():
     database.update_setting("llm_provider", "anthropic")
     assert database.get_setting("llm_provider") == "anthropic"
@@ -387,6 +425,79 @@ def t_render_ai_variation_reorder():
     assert_playable(sub_out)
 
 
+def t_framing_modes_render():
+    """Every framing mode must yield a true 1080x1920 file from wide footage."""
+    require_ffmpeg()
+    src = FIXTURES["landscape"]
+    total = render_engine.get_video_duration(src)
+    plan = ai_editor.get_fallback_segmentation(total)
+    smap = {"hook": plan["hook"], "demo": plan["demo"], "cta": plan["cta"]}
+    transcript = fake_transcript(total)
+    for fr_mode in ("crop", "fit_blur", "fit_black", "auto"):
+        out = os.path.join(database.CUTS_DIR, f"framing_{fr_mode}.mp4")
+        render_engine.make_semantic_cut(src, smap, 15, out, segments=transcript,
+                                        total_dur=total, framing=fr_mode)
+        assert_playable(out)
+        w, h = render_engine.get_video_dimensions(out)
+        assert (w, h) == (1080, 1920), f"{fr_mode}: got {w}x{h}"
+
+
+def t_thumbnails_and_waveform_helpers():
+    require_ffmpeg()
+    thumb = render_engine.generate_thumbnail(FIXTURES["tiny"])
+    assert thumb and os.path.exists(thumb)
+
+
+def t_api_endpoints():
+    """Delete / retry / waveform endpoints against the live app (isolated DB)."""
+    try:
+        from fastapi.testclient import TestClient
+        import main as app_main
+    except Exception as e:
+        raise SkipTest(f"fastapi TestClient unavailable: {e}")
+    require_ffmpeg()
+
+    src = FIXTURES["tiny"]
+    with TestClient(app_main.app) as client:
+        # Waveform on a completed project with a real source file.
+        shutil.copy2(src, os.path.join(database.RAW_DIR, "wave_src.mp4"))
+        conn = database.get_db_connection()
+        cur = conn.cursor()
+        cur.execute("INSERT INTO projects (filename, status) VALUES ('wave_src.mp4', 'completed')")
+        wave_id = cur.lastrowid
+        cur.execute("INSERT INTO projects (filename, status, error_message) VALUES ('ghost.mp4', 'failed', 'x')")
+        ghost_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+
+        r = client.get(f"/api/projects/{wave_id}/waveform")
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["peaks"] and max(data["peaks"]) > 0.05, "expected non-silent peaks"
+        assert 1.0 < data["duration"] < 3.5
+
+        # Retry requeues a failed project (missing file -> worker fails it fast again).
+        r = client.post(f"/api/projects/{ghost_id}/retry")
+        assert r.status_code == 200 and r.json()["status"] == "pending"
+
+        # Delete removes rows and files.
+        r = client.delete(f"/api/projects/{wave_id}")
+        assert r.status_code == 200, r.text
+        assert client.get(f"/api/projects/{wave_id}").status_code == 404
+        assert not os.path.exists(os.path.join(database.RAW_DIR, "wave_src.mp4"))
+
+        # Details expose framing + marketing fields on a fresh project.
+        conn = database.get_db_connection()
+        cur = conn.cursor()
+        cur.execute("INSERT INTO projects (filename, status) VALUES ('meta.mp4', 'completed')")
+        meta_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+        detail = client.get(f"/api/projects/{meta_id}").json()
+        assert detail["framing"] == "auto" and "marketing" in detail
+        client.delete(f"/api/projects/{meta_id}")
+
+
 def t_corrupt_file_fails_cleanly():
     require_ffmpeg()
     bad = os.path.join(database.RAW_DIR, "corrupt.mp4")
@@ -414,6 +525,9 @@ def main():
     check("transition planning clamps", t_transition_planning_clamps)
     check("smart cut point bounds", t_smart_cut_point_bounds)
     check("ASS generation edge cases", t_ass_generation_edge_cases)
+    check("framing mode resolution (auto/crop/fit)", t_framing_resolution)
+    check("silence jump-cut slice splitting", t_silence_split_logic)
+    check("loudnorm audio chain append", t_loudnorm_append)
     check("settings + provider fallback logic", t_db_settings_roundtrip)
 
     print("\n[2/2] Render tests (real FFmpeg pipeline)")
@@ -431,6 +545,9 @@ def main():
     check("2-second micro clip -> all cuts", t_render_tiny_2s_clip)
     check("filename with apostrophe/&/unicode -> all cuts", t_render_hostile_filename)
     check("AI variation reorder (CTA-Hook-Demo, xfade, subs)", t_render_ai_variation_reorder)
+    check("framing modes render true 1080x1920 from wide source", t_framing_modes_render)
+    check("poster thumbnail generation", t_thumbnails_and_waveform_helpers)
+    check("API: waveform / retry / delete endpoints", t_api_endpoints)
     check("corrupt file detected cleanly", t_corrupt_file_fails_cleanly)
 
     print("\n====================")

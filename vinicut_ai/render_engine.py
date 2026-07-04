@@ -136,13 +136,30 @@ def run_command(args, desc="ffmpeg", check=True, progress_callback=None, duratio
 
     if result.returncode != 0 and "h264_nvenc" in args:
         log.warning("NVENC failed for '%s'. Retrying with CPU libx264 fallback...", desc)
-        cpu_args = list(args)
-        for idx, val in enumerate(cpu_args):
+        # Rebuild the command translating NVENC-only options to libx264 ones.
+        cpu_args = []
+        skip_next = False
+        for idx, val in enumerate(args):
+            if skip_next:
+                skip_next = False
+                continue
+            nxt = args[idx + 1] if idx + 1 < len(args) else None
             if val == "h264_nvenc":
-                cpu_args[idx] = "libx264"
-            elif val == "-preset" and idx + 1 < len(cpu_args):
-                if cpu_args[idx + 1] in ("p1", "p2", "p3", "p4", "p5", "p6", "p7"):
-                    cpu_args[idx + 1] = "medium"
+                cpu_args.append("libx264")
+            elif val == "-preset" and nxt in ("p1", "p2", "p3", "p4", "p5", "p6", "p7"):
+                cpu_args += ["-preset", "medium"]
+                skip_next = True
+            elif val == "-rc":                       # NVENC rate-control mode
+                skip_next = True
+            elif val == "-cq":                       # NVENC quality -> x264 CRF
+                cpu_args += ["-crf", "21"]
+                skip_next = True
+            elif val == "-b:v" and nxt == "0":       # "let CQ drive it" is NVENC-only
+                skip_next = True
+            elif val == "-tune" and nxt == "hq":     # NVENC tune name x264 doesn't know
+                skip_next = True
+            else:
+                cpu_args.append(val)
         result = _run_process(cpu_args, progress_callback, duration)
         desc = f"{desc} (CPU fallback)"
 
@@ -623,10 +640,11 @@ def render_subtitles(video_path, ass_path, output_path, progress_callback=None, 
         args = [
             FFMPEG_BIN, "-i", video_path,
             "-vf", vf,
-            "-c:v", "h264_nvenc", "-preset", "p4",
-            "-c:a", "aac", "-b:a", "192k",
-            "-y", output_path,
-        ]
+            "-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "23", "-b:v", "0",
+            "-pix_fmt", "yuv420p",
+            # The raw cut's audio is already mastered — pass it through untouched.
+            "-c:a", "copy",
+        ] + MP4_FLAGS + ["-y", output_path]
         run_command(args, desc="Subtitle burn", progress_callback=progress_callback, duration=duration)  # raises with stderr on failure
     finally:
         if is_temp:
@@ -656,6 +674,220 @@ def get_video_duration(video_path):
         except ValueError:
             pass
     return 0.0
+
+def get_video_dimensions(video_path):
+    """Returns (width, height) of the first video stream, or (0, 0) on failure."""
+    args = [
+        FFPROBE_BIN, "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=width,height",
+        "-of", "csv=s=x:p=0",
+        video_path,
+    ]
+    result = run_command(args, desc="ffprobe dimensions", check=False)
+    if result.returncode == 0:
+        try:
+            w, h = result.stdout.strip().splitlines()[0].split("x")[:2]
+            return int(w), int(h)
+        except (ValueError, IndexError):
+            pass
+    return 0, 0
+
+
+# ---------------------------------------------------------------------------
+# 9:16 framing engine
+# ---------------------------------------------------------------------------
+# Sources are rarely 9:16. A hard center-crop (the old behavior) destroys the
+# composition of wide product footage — half the frame is thrown away. The
+# framing mode decides how a source is placed on the 1080x1920 canvas:
+#
+#   "crop"      fill the frame, center-cropping the overflow (old behavior;
+#               correct for near-portrait phone footage).
+#   "fit_blur"  fit the whole frame, filling the borders with a blurred,
+#               darkened copy of the video (the standard pro treatment).
+#   "fit_black" fit the whole frame on black bars.
+#   "auto"      "crop" when the source is already close to portrait (only a
+#               sliver is lost), otherwise "fit_blur".
+
+OUT_W = config.OUTPUT_WIDTH
+OUT_H = config.OUTPUT_HEIGHT
+
+FRAMING_MODES = ("auto", "crop", "fit_blur", "fit_black")
+
+
+def resolve_framing(framing, video_path=None, src_dims=None):
+    """Normalizes a framing setting to a concrete mode for this source."""
+    mode = (framing or "auto").strip().lower()
+    if mode in ("crop", "fill"):
+        return "crop"
+    if mode in ("fit_blur", "blur", "fit"):
+        return "fit_blur"
+    if mode in ("fit_black", "black", "pad"):
+        return "fit_black"
+    # auto: decide from the source aspect ratio.
+    if src_dims and src_dims[0] and src_dims[1]:
+        w, h = src_dims
+    elif video_path:
+        w, h = get_video_dimensions(video_path)
+    else:
+        w, h = 0, 0
+    if not w or not h:
+        return "crop"
+    target = OUT_W / OUT_H
+    # Within ~20% of portrait -> the crop only trims a sliver; otherwise a
+    # center-crop would cut off real content, so fit with a blurred canvas.
+    return "crop" if (w / h) <= target * 1.2 else "fit_blur"
+
+
+def _zoom_chain(zoom):
+    """1.15x punch-in applied AFTER the framing composite (hook/CTA retention zoom)."""
+    if not zoom:
+        return ""
+    return (f",crop=w=iw/1.15:h=ih/1.15:x=(in_w-out_w)/2:y=(in_h-out_h)/2,"
+            f"scale={OUT_W}:{OUT_H}")
+
+
+def framing_filter_parts(idx, start, end, mode, zoom=False, in_label="[0:v]"):
+    """
+    Builds the filter_complex parts that turn one trimmed slice of the source
+    into a framed 1080x1920 stream labelled [v{idx}].
+    """
+    base = f"{in_label}trim=start={start}:end={end},setpts=PTS-STARTPTS"
+    z = _zoom_chain(zoom)
+    if mode == "fit_black":
+        return [f"{base},scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=decrease,"
+                f"pad={OUT_W}:{OUT_H}:(ow-iw)/2:(oh-ih)/2:black{z},setsar=1[v{idx}]"]
+    if mode == "fit_blur":
+        return [
+            f"{base},split=2[fbg{idx}][ffg{idx}]",
+            f"[fbg{idx}]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,"
+            f"crop={OUT_W}:{OUT_H},gblur=sigma=26,eq=brightness=-0.06[fbb{idx}]",
+            f"[ffg{idx}]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=decrease[ffs{idx}]",
+            f"[fbb{idx}][ffs{idx}]overlay=(W-w)/2:(H-h)/2{z},setsar=1[v{idx}]",
+        ]
+    # crop (fill)
+    return [f"{base},scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,"
+            f"crop={OUT_W}:{OUT_H}{z},setsar=1[v{idx}]"]
+
+
+def framing_single_parts(mode, in_label="[0:v]", out_label="[v_scale]"):
+    """Framing graph for a whole (untrimmed) stream: in_label -> out_label."""
+    if mode == "fit_black":
+        return [f"{in_label}scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=decrease,"
+                f"pad={OUT_W}:{OUT_H}:(ow-iw)/2:(oh-ih)/2:black,setsar=1{out_label}"]
+    if mode == "fit_blur":
+        return [
+            f"{in_label}split=2[fsbg][fsfg]",
+            f"[fsbg]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,"
+            f"crop={OUT_W}:{OUT_H},gblur=sigma=26,eq=brightness=-0.06[fsbb]",
+            f"[fsfg]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=decrease[fsff]",
+            f"[fsbb][fsff]overlay=(W-w)/2:(H-h)/2,setsar=1{out_label}",
+        ]
+    return [f"{in_label}scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,"
+            f"crop={OUT_W}:{OUT_H},setsar=1{out_label}"]
+
+
+# ---------------------------------------------------------------------------
+# Audio mastering / container flags
+# ---------------------------------------------------------------------------
+# -14 LUFS integrated is the loudness target used by TikTok/Instagram/YouTube;
+# normalizing here means every deliverable plays at consistent, full loudness.
+LOUDNORM_FILTER = "loudnorm=I=-14:TP=-1.5:LRA=11"
+
+# +faststart moves the moov atom to the front so browsers/social apps can
+# start playing before the file finishes downloading.
+MP4_FLAGS = ["-movflags", "+faststart"]
+
+
+def audio_normalize_enabled():
+    try:
+        import database
+        return str(database.get_setting("audio_normalize", "1")).strip().lower() in ("1", "true", "yes", "on")
+    except Exception:
+        return True
+
+
+def append_loudnorm(filter_parts, in_label, enabled):
+    """Optionally appends the loudnorm stage; returns the final audio label."""
+    if not enabled:
+        return in_label
+    filter_parts.append(f"[{in_label.strip('[]')}]{LOUDNORM_FILTER}[a_master]")
+    return "[a_master]"
+
+
+# ---------------------------------------------------------------------------
+# Silence-aware jump cuts
+# ---------------------------------------------------------------------------
+
+def split_slices_on_silence(slices, segments, min_gap=0.45, pad=0.10):
+    """
+    Splits each (start, end, type) slice into sub-slices that skip silent gaps
+    longer than `min_gap` seconds, using the transcript's word timestamps.
+    This produces the tight jump-cut pacing of professional short-form edits.
+
+    Slices with no detected speech are kept whole (product b-roll must not be
+    dropped). Each kept sub-slice gets `pad` seconds of breathing room and the
+    result is guaranteed non-empty.
+    """
+    if not segments:
+        return slices
+
+    words = []
+    for seg in segments:
+        for w in seg.get("words") or []:
+            try:
+                ws, we = float(w["start"]), float(w["end"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if we > ws:
+                words.append((ws, we))
+    if not words:
+        return slices
+    words.sort()
+
+    out = []
+    for (s, e, seg_type) in slices:
+        inside = [(max(s, ws), min(e, we)) for ws, we in words if we > s and ws < e]
+        if not inside:
+            out.append((s, e, seg_type))
+            continue
+        # Merge word intervals separated by less than min_gap into speech runs.
+        runs = []
+        run_s, run_e = inside[0]
+        for ws, we in inside[1:]:
+            if ws - run_e <= min_gap:
+                run_e = max(run_e, we)
+            else:
+                runs.append((run_s, run_e))
+                run_s, run_e = ws, we
+        runs.append((run_s, run_e))
+
+        subs = []
+        for rs, re_ in runs:
+            a = max(s, rs - pad)
+            b = min(e, re_ + pad)
+            if subs and a <= subs[-1][1]:
+                subs[-1] = (subs[-1][0], max(subs[-1][1], b))
+            elif b - a >= 0.2:
+                subs.append((a, b))
+        total = sum(b - a for a, b in subs)
+        if not subs or total < 0.5:
+            out.append((s, e, seg_type))
+        else:
+            out.extend((a, b, seg_type) for a, b in subs)
+    return out
+
+
+def generate_thumbnail(video_path, at_seconds=0.6):
+    """Writes a small poster JPEG next to the video (path + '.jpg'). Best effort."""
+    thumb = video_path + ".jpg"
+    args = [
+        FFMPEG_BIN, "-ss", str(at_seconds), "-i", video_path,
+        "-frames:v", "1", "-vf", "scale=360:-2", "-q:v", "4", "-y", thumb,
+    ]
+    res = run_command(args, desc="thumbnail", check=False)
+    return thumb if (res.returncode == 0 and os.path.exists(thumb)) else None
+
 
 def has_audio_stream(video_path):
     """Helper to check if a video file contains an audio stream using ffprobe."""
@@ -827,10 +1059,35 @@ def shift_subtitles_for_slices(subtitle_segments, slices, use_xfade=False, trans
     return shifted
 
 
-def make_semantic_cut(video_path, segments_map, target_duration, output_path, segments=None, zoom_effect=1, bg_music_path=None, transition=None, transition_duration=None, total_dur=None, return_slices=False, progress_callback=None):
+def encode_args():
+    """
+    Shared output encode settings for every deliverable: NVENC quality-mode
+    rate control (translated to libx264 CRF by the CPU fallback), guaranteed
+    yuv420p at constant 30 fps (phone sources are often VFR), 48 kHz AAC, and
+    faststart for instant social/browser playback.
+    """
+    return [
+        "-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "23", "-b:v", "0",
+        "-pix_fmt", "yuv420p", "-r", "30",
+        "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+    ] + MP4_FLAGS + ["-y"]
+
+
+def silence_removal_settings():
+    """Reads the silence jump-cut config: (enabled, min_gap_seconds)."""
+    try:
+        import database
+        enabled = str(database.get_setting("silence_removal", "1")).strip().lower() in ("1", "true", "yes", "on")
+        min_gap = float(database.get_setting("silence_min_gap", "0.45"))
+    except Exception:
+        enabled, min_gap = True, 0.45
+    return enabled, max(0.15, min_gap)
+
+
+def make_semantic_cut(video_path, segments_map, target_duration, output_path, segments=None, zoom_effect=1, bg_music_path=None, transition=None, transition_duration=None, total_dur=None, return_slices=False, progress_callback=None, framing="auto"):
     video_path, is_temp = ensure_audio_stream(video_path)
     try:
-        return _make_semantic_cut_impl(video_path, segments_map, target_duration, output_path, segments, zoom_effect, bg_music_path, transition, transition_duration, total_dur, return_slices, progress_callback)
+        return _make_semantic_cut_impl(video_path, segments_map, target_duration, output_path, segments, zoom_effect, bg_music_path, transition, transition_duration, total_dur, return_slices, progress_callback, framing)
     finally:
         if is_temp:
             try:
@@ -838,7 +1095,7 @@ def make_semantic_cut(video_path, segments_map, target_duration, output_path, se
             except Exception:
                 pass
 
-def _make_semantic_cut_impl(video_path, segments_map, target_duration, output_path, segments=None, zoom_effect=1, bg_music_path=None, transition=None, transition_duration=None, total_dur=None, return_slices=False, progress_callback=None):
+def _make_semantic_cut_impl(video_path, segments_map, target_duration, output_path, segments=None, zoom_effect=1, bg_music_path=None, transition=None, transition_duration=None, total_dur=None, return_slices=False, progress_callback=None, framing="auto"):
     """
     Cuts and merges segments from video_path according to semantic parts to match target_duration.
     segments_map = {
@@ -862,27 +1119,30 @@ def _make_semantic_cut_impl(video_path, segments_map, target_duration, output_pa
     if total_dur is None:
         total_dur = get_video_duration(video_path)
     use_bg = bool(bg_music_path and os.path.exists(bg_music_path))
+    mode = resolve_framing(framing, video_path=video_path)
+    normalize = audio_normalize_enabled()
     if total_dur <= target_duration:
         # Video is shorter than target, just output it directly with optional bg music mixing
+        filter_parts = framing_single_parts(mode, out_label="[v_scale]")
         if use_bg:
-            filter_parts = [
-                "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[v_scale]",
+            filter_parts += [
                 f"[1:a]atrim=0:{total_dur},asetpts=PTS-STARTPTS[bg_raw]",
                 "[bg_raw][0:a]sidechaincompress=threshold=0.15:ratio=4:attack=50:release=300,volume=0.15[bg_ducked]",
-                "[0:a][bg_ducked]amix=inputs=2:duration=first:dropout_transition=2[a]"
+                "[0:a][bg_ducked]amix=inputs=2:duration=first:dropout_transition=2[a]",
             ]
-            filter_graph = "; ".join(filter_parts)
+            a_label = append_loudnorm(filter_parts, "[a]", normalize)
             args = [
                 FFMPEG_BIN, "-i", video_path, "-stream_loop", "-1", "-i", bg_music_path,
-                "-filter_complex", filter_graph, "-map", "[v_scale]", "-map", "[a]",
-                "-c:v", "h264_nvenc", "-preset", "p4", "-c:a", "aac", "-y", output_path,
-            ]
+                "-filter_complex", "; ".join(filter_parts),
+                "-map", "[v_scale]", "-map", a_label,
+            ] + encode_args() + [output_path]
         else:
+            a_label = append_loudnorm(filter_parts, "[0:a]", normalize) if normalize else "0:a"
             args = [
                 FFMPEG_BIN, "-i", video_path,
-                "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
-                "-c:v", "h264_nvenc", "-preset", "p4", "-c:a", "aac", "-y", output_path,
-            ]
+                "-filter_complex", "; ".join(filter_parts),
+                "-map", "[v_scale]", "-map", a_label,
+            ] + encode_args() + [output_path]
         res = run_command(args, desc=f"Direct transcode ({target_duration}s)", check=False)
         if res.returncode != 0:
             log.error("Direct transcode failed for %s:\n%s", output_path, (res.stderr or "").strip())
@@ -945,25 +1205,23 @@ def _make_semantic_cut_impl(video_path, segments_map, target_duration, output_pa
             if cta_dur > 0:
                 slices.append((smart_cta_start, cta[1], "cta"))
 
+    # Tighten pacing: split slices on silent gaps between words (jump cuts).
+    sil_enabled, sil_gap = silence_removal_settings()
+    if sil_enabled and segments:
+        before = len(slices)
+        slices = split_slices_on_silence(slices, segments, min_gap=sil_gap)
+        if len(slices) != before:
+            log.info("Silence removal: %d slices -> %d for the %ss cut.", before, len(slices), target_duration)
+
     # Compile per-segment trim filters
     filter_parts = []
     inputs = []
     clip_durations = []
     for idx, (start, end, segment_type) in enumerate(slices):
         clip_durations.append(end - start)
-        # Apply 1.15x scale/crop zoom for Hook and CTA to enhance retention
-        if zoom_effect == 1 and segment_type in ("hook", "cta"):
-            filter_parts.append(
-                f"[0:v]trim=start={start}:end={end},setpts=PTS-STARTPTS,"
-                f"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
-                f"crop=w=iw/1.15:h=ih/1.15:x=(in_w-out_w)/2:y=(in_h-out_h)/2,scale=1080:1920,setsar=1[v{idx}]"
-            )
-        else:
-            filter_parts.append(
-                f"[0:v]trim=start={start}:end={end},setpts=PTS-STARTPTS,"
-                f"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1[v{idx}]"
-            )
-
+        # 1.15x punch-in on Hook and CTA to enhance retention
+        zoom = (zoom_effect == 1 and segment_type in ("hook", "cta"))
+        filter_parts.extend(framing_filter_parts(idx, start, end, mode, zoom=zoom))
         filter_parts.append(f"[0:a]atrim=start={start}:end={end},asetpts=PTS-STARTPTS[a{idx}]")
         inputs.append(f"[v{idx}][a{idx}]")
 
@@ -984,20 +1242,19 @@ def _make_semantic_cut_impl(video_path, segments_map, target_duration, output_pa
         filter_parts.append(f"[1:a]atrim=0:{actual_slices_duration},asetpts=PTS-STARTPTS[bg_raw]")
         filter_parts.append(f"[bg_raw][a_concat]sidechaincompress=threshold=0.15:ratio=4:attack=50:release=300,volume=0.15[bg_ducked]")
         filter_parts.append(f"[a_concat][bg_ducked]amix=inputs=2:duration=first:dropout_transition=2[a]")
-
-        filter_graph = "; ".join(filter_parts)
+        a_label = append_loudnorm(filter_parts, "[a]", normalize)
         args = [
             FFMPEG_BIN, "-i", video_path, "-stream_loop", "-1", "-i", bg_music_path,
-            "-filter_complex", filter_graph, "-map", "[v_concat]", "-map", "[a]",
-            "-c:v", "h264_nvenc", "-preset", "p4", "-c:a", "aac", "-y", output_path,
-        ]
+            "-filter_complex", "; ".join(filter_parts),
+            "-map", "[v_concat]", "-map", a_label,
+        ] + encode_args() + [output_path]
     else:
-        filter_graph = "; ".join(filter_parts)
+        a_label = append_loudnorm(filter_parts, "[a_concat]", normalize)
         args = [
             FFMPEG_BIN, "-i", video_path,
-            "-filter_complex", filter_graph, "-map", "[v_concat]", "-map", "[a_concat]",
-            "-c:v", "h264_nvenc", "-preset", "p4", "-c:a", "aac", "-y", output_path,
-        ]
+            "-filter_complex", "; ".join(filter_parts),
+            "-map", "[v_concat]", "-map", a_label,
+        ] + encode_args() + [output_path]
 
     result = run_command(args, desc=f"Semantic cut ({target_duration}s)", check=False, progress_callback=progress_callback, duration=target_duration)
     if result.returncode != 0:
@@ -1007,21 +1264,22 @@ def _make_semantic_cut_impl(video_path, segments_map, target_duration, output_pa
             "Semantic cut failed for %ss; falling back to a head clip. FFmpeg stderr:\n%s",
             target_duration, (result.stderr or "").strip()
         )
+        fb_parts = framing_single_parts(mode, out_label="[v_scale]")
         if use_bg:
+            fb_parts.append("[1:a]volume=0.1[bg]")
+            fb_parts.append("[0:a][bg]amix=inputs=2:duration=first[a_mix]")
             fallback_args = [
                 FFMPEG_BIN, "-ss", "0", "-i", video_path, "-stream_loop", "-1", "-i", bg_music_path,
                 "-t", str(target_duration),
-                "-filter_complex", "[1:a]volume=0.1[bg];[0:a][bg]amix=inputs=2:duration=first[a]",
-                "-map", "0:v", "-map", "[a]",
-                "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
-                "-c:v", "h264_nvenc", "-preset", "p4", "-c:a", "aac", "-y", output_path,
-            ]
+                "-filter_complex", "; ".join(fb_parts),
+                "-map", "[v_scale]", "-map", "[a_mix]",
+            ] + encode_args() + [output_path]
         else:
             fallback_args = [
                 FFMPEG_BIN, "-ss", "0", "-i", video_path, "-t", str(target_duration),
-                "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
-                "-c:v", "h264_nvenc", "-preset", "p4", "-c:a", "aac", "-y", output_path,
-            ]
+                "-filter_complex", "; ".join(fb_parts),
+                "-map", "[v_scale]", "-map", "0:a",
+            ] + encode_args() + [output_path]
         fb = run_command(fallback_args, desc=f"Fallback head clip ({target_duration}s)", check=False)
         if fb.returncode != 0:
             log.error(
@@ -1033,10 +1291,10 @@ def _make_semantic_cut_impl(video_path, segments_map, target_duration, output_pa
         return output_path, {"slices": slices, "use_xfade": use_xfade, "trans_d": trans_d}
     return output_path
 
-def render_custom_reordered_cut(video_path, segments_map, order, subtitle_segments, style_preset, output_path, font_family="Montserrat", zoom_effect=1, bg_music_path=None, target_duration=None, transition=None, transition_duration=None, total_dur=None, animation="none", fade_ms=0, return_slices=False, burn=True):
+def render_custom_reordered_cut(video_path, segments_map, order, subtitle_segments, style_preset, output_path, font_family="Montserrat", zoom_effect=1, bg_music_path=None, target_duration=None, transition=None, transition_duration=None, total_dur=None, animation="none", fade_ms=0, return_slices=False, burn=True, framing="auto"):
     video_path, is_temp = ensure_audio_stream(video_path)
     try:
-        return _render_custom_reordered_cut_impl(video_path, segments_map, order, subtitle_segments, style_preset, output_path, font_family, zoom_effect, bg_music_path, target_duration, transition, transition_duration, total_dur, animation, fade_ms, return_slices, burn)
+        return _render_custom_reordered_cut_impl(video_path, segments_map, order, subtitle_segments, style_preset, output_path, font_family, zoom_effect, bg_music_path, target_duration, transition, transition_duration, total_dur, animation, fade_ms, return_slices, burn, framing)
     finally:
         if is_temp:
             try:
@@ -1044,7 +1302,7 @@ def render_custom_reordered_cut(video_path, segments_map, order, subtitle_segmen
             except Exception:
                 pass
 
-def _render_custom_reordered_cut_impl(video_path, segments_map, order, subtitle_segments, style_preset, output_path, font_family="Montserrat", zoom_effect=1, bg_music_path=None, target_duration=None, transition=None, transition_duration=None, total_dur=None, animation="none", fade_ms=0, return_slices=False, burn=True):
+def _render_custom_reordered_cut_impl(video_path, segments_map, order, subtitle_segments, style_preset, output_path, font_family="Montserrat", zoom_effect=1, bg_music_path=None, target_duration=None, transition=None, transition_duration=None, total_dur=None, animation="none", fade_ms=0, return_slices=False, burn=True, framing="auto"):
     """
     Slices segments, concatenates them in custom order, shifts subtitles (including word timestamps), and burns them.
 
@@ -1110,11 +1368,8 @@ def _render_custom_reordered_cut_impl(video_path, segments_map, order, subtitle_
         demo_budget = orig_demo_dur
         cta_budget = orig_cta_dur
 
-    # Pass 1: resolve each part's source window and capture overlapping subtitles
-    # with times relative to the start of that part (independent of the final
-    # output placement, which depends on the transition overlap computed below).
+    # Resolve each ordered part to its source window (word-snapped).
     slices = []
-    part_subs = []
 
     for part in order:
         part_cleaned = part.lower().strip()
@@ -1148,35 +1403,6 @@ def _render_custom_reordered_cut_impl(video_path, segments_map, order, subtitle_
 
         slices.append((part_start, part_end, part_cleaned))
 
-        # Capture overlapping subtitles with times relative to this part's start.
-        subs_here = []
-        if subtitle_segments:
-            for seg in subtitle_segments:
-                overlap_start = max(part_start, float(seg["start"]))
-                overlap_end = min(part_end, float(seg["end"]))
-
-                if overlap_end > overlap_start:
-                    rel_words = []
-                    has_words = "words" in seg
-                    if has_words:
-                        for w in seg["words"]:
-                            w_start = max(overlap_start, float(w["start"]))
-                            w_end = min(overlap_end, float(w["end"]))
-                            if w_end > w_start:
-                                rel_words.append({
-                                    "word": w["word"],
-                                    "start": w_start - part_start,
-                                    "end": w_end - part_start
-                                })
-                    subs_here.append({
-                        "rel_start": overlap_start - part_start,
-                        "rel_end": overlap_end - part_start,
-                        "text": seg["text"],
-                        "has_words": has_words,
-                        "rel_words": rel_words
-                    })
-        part_subs.append(subs_here)
-
     if not slices:
         # Fallback to direct copy
         ass_path = output_path + ".ass"
@@ -1186,55 +1412,30 @@ def _render_custom_reordered_cut_impl(video_path, segments_map, order, subtitle_
             return output_path, {"slices": [], "use_xfade": False, "trans_d": 0.0}
         return output_path
 
+    # Tighten pacing inside each part: skip silent gaps between words.
+    sil_enabled, sil_gap = silence_removal_settings()
+    if sil_enabled and subtitle_segments:
+        slices = split_slices_on_silence(slices, subtitle_segments, min_gap=sil_gap)
+
     # Decide the transition plan from the final clip durations. This single
     # decision drives BOTH the subtitle timeline and the filter graph so they
     # never drift apart.
     clip_durations = [end - start for (start, end, _t) in slices]
     use_xfade, trans_d, xfade_id = plan_transition(transition, transition_duration, clip_durations)
 
-    # Pass 2: place subtitles on the output timeline. Each xfade boundary pulls
-    # the following part earlier by the transition duration (the overlap).
-    shifted_subtitles = []
-    out_offset = 0.0
-    for i, (subs_here, dur) in enumerate(zip(part_subs, clip_durations)):
-        for s in subs_here:
-            new_seg = {
-                "start": out_offset + s["rel_start"],
-                "end": out_offset + s["rel_end"],
-                "text": s["text"]
-            }
-            if s["has_words"]:
-                new_seg["words"] = [
-                    {
-                        "word": w["word"],
-                        "start": out_offset + w["start"],
-                        "end": out_offset + w["end"]
-                    }
-                    for w in s["rel_words"]
-                ]
-            shifted_subtitles.append(new_seg)
-
-        if use_xfade and i < len(clip_durations) - 1:
-            out_offset += dur - trans_d
-        else:
-            out_offset += dur
+    # Place subtitles on the output timeline of the (reordered, possibly
+    # silence-split) slices — the same mapper the standard cuts use, so the
+    # subtitle logic has exactly one source of truth.
+    shifted_subtitles = shift_subtitles_for_slices(subtitle_segments, slices, use_xfade, trans_d) if subtitle_segments else []
 
     # Compile per-segment trim filters for reordering
+    mode = resolve_framing(framing, video_path=video_path)
+    normalize = audio_normalize_enabled()
     filter_parts = []
     inputs = []
     for idx, (start, end, segment_type) in enumerate(slices):
-        if zoom_effect == 1 and segment_type in ("hook", "cta"):
-            filter_parts.append(
-                f"[0:v]trim=start={start}:end={end},setpts=PTS-STARTPTS,"
-                f"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
-                f"crop=w=iw/1.15:h=ih/1.15:x=(in_w-out_w)/2:y=(in_h-out_h)/2,scale=1080:1920,setsar=1[v{idx}]"
-            )
-        else:
-            filter_parts.append(
-                f"[0:v]trim=start={start}:end={end},setpts=PTS-STARTPTS,"
-                f"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1[v{idx}]"
-            )
-
+        zoom = (zoom_effect == 1 and segment_type in ("hook", "cta"))
+        filter_parts.extend(framing_filter_parts(idx, start, end, mode, zoom=zoom))
         filter_parts.append(f"[0:a]atrim=start={start}:end={end},asetpts=PTS-STARTPTS[a{idx}]")
         inputs.append(f"[v{idx}][a{idx}]")
 
@@ -1258,20 +1459,19 @@ def _render_custom_reordered_cut_impl(video_path, segments_map, order, subtitle_
         filter_parts.append(f"[1:a]atrim=0:{actual_slices_duration},asetpts=PTS-STARTPTS[bg_raw]")
         filter_parts.append(f"[bg_raw][a_concat]sidechaincompress=threshold=0.15:ratio=4:attack=50:release=300,volume=0.15[bg_ducked]")
         filter_parts.append(f"[a_concat][bg_ducked]amix=inputs=2:duration=first:dropout_transition=2[a]")
-
-        filter_graph = "; ".join(filter_parts)
+        a_label = append_loudnorm(filter_parts, "[a]", normalize)
         args = [
             FFMPEG_BIN, "-i", video_path, "-stream_loop", "-1", "-i", bg_music_path,
-            "-filter_complex", filter_graph, "-map", "[v_concat]", "-map", "[a]",
-            "-c:v", "h264_nvenc", "-preset", "p4", "-c:a", "aac", "-y", temp_video,
-        ]
+            "-filter_complex", "; ".join(filter_parts),
+            "-map", "[v_concat]", "-map", a_label,
+        ] + encode_args() + [temp_video]
     else:
-        filter_graph = "; ".join(filter_parts)
+        a_label = append_loudnorm(filter_parts, "[a_concat]", normalize)
         args = [
             FFMPEG_BIN, "-i", video_path,
-            "-filter_complex", filter_graph, "-map", "[v_concat]", "-map", "[a_concat]",
-            "-c:v", "h264_nvenc", "-preset", "p4", "-c:a", "aac", "-y", temp_video,
-        ]
+            "-filter_complex", "; ".join(filter_parts),
+            "-map", "[v_concat]", "-map", a_label,
+        ] + encode_args() + [temp_video]
 
     run_command(args, desc="Reorder concat")  # raises with stderr on failure
 

@@ -55,9 +55,10 @@ async def lifespan(app: FastAPI):
                   "Windows: winget install Gyan.FFmpeg (then restart the app).")
     broadcast_task = asyncio.create_task(broadcast_loop())
     cleanup_task = asyncio.create_task(automated_cleanup_loop())
-    threading.Thread(target=sequential_queue_worker, daemon=True, name="queue-worker").start()
+    for i in range(config.WORKERS):
+        threading.Thread(target=sequential_queue_worker, daemon=True, name=f"queue-worker-{i + 1}").start()
     threading.Thread(target=watch_folder_worker, daemon=True, name="watch-folder").start()
-    log.info("Vinicut AI v%s ready — queue worker and watch folder active.", APP_VERSION)
+    log.info("Vinicut AI v%s ready — %d worker(s) and watch folder active.", APP_VERSION, config.WORKERS)
     yield
     broadcast_task.cancel()
     cleanup_task.cancel()
@@ -266,21 +267,34 @@ def make_progress_reporter(project_id, base_pct, span_pct):
 
 
 # ---------------------------------------------------------------------------
-# Sequential background queue processor
+# Background queue processors
 # ---------------------------------------------------------------------------
+
+# Serializes the select-then-update job claim so multiple workers never grab
+# the same project.
+_claim_lock = threading.Lock()
+
+
+def claim_next_project():
+    with _claim_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, filename FROM projects WHERE status IN ('pending', 'queued') ORDER BY id ASC LIMIT 1"
+        )
+        row = cursor.fetchone()
+        if row:
+            cursor.execute("UPDATE projects SET status = 'analyzing', progress = 0 WHERE id = ?", (row[0],))
+            conn.commit()
+        conn.close()
+        return row
+
 
 def sequential_queue_worker():
     while True:
         project_id = None
         try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT id, filename FROM projects WHERE status IN ('pending', 'queued') ORDER BY id ASC LIMIT 1"
-            )
-            row = cursor.fetchone()
-            conn.close()
-
+            row = claim_next_project()
             if not row:
                 time.sleep(1.0)
                 continue
@@ -333,13 +347,24 @@ def sequential_queue_worker():
                 "standard_cuts": ai_data.get("standard_cuts", {}),
             }
 
+            # Ready-to-post marketing copy (hooks/captions/hashtags). Optional:
+            # a failure here must never block the render.
+            marketing_json = None
+            try:
+                pack = ai_editor.generate_marketing_pack(transcription)
+                if pack:
+                    marketing_json = json.dumps(pack)
+            except Exception as me:
+                log.warning("Marketing pack failed for project %s: %s", project_id, me)
+
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("""
                 UPDATE projects
-                SET segments_map_json = ?, transcript_json = ?, status = 'rendering', progress = 5
+                SET segments_map_json = ?, transcript_json = ?, marketing_json = COALESCE(?, marketing_json),
+                    status = 'rendering', progress = 5
                 WHERE id = ?
-            """, (json.dumps(segments_map), json.dumps(transcription), project_id))
+            """, (json.dumps(segments_map), json.dumps(transcription), marketing_json, project_id))
             conn.commit()
             conn.close()
             broadcast_sync({"type": "status", "project_id": project_id, "status": "rendering", "progress": 5})
@@ -404,6 +429,15 @@ def resolve_style_preset(project_id, default="Bold Yellow"):
     return preset
 
 
+def get_project_framing(project_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT framing FROM projects WHERE id = ?", (project_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return (row[0] if row and row[0] else "auto")
+
+
 def render_ai_variations(project_id, filename, video_path, transcription, segments_map, ai_data, total_dur):
     """
     Renders every AI montage variation at every target duration (raw + subbed),
@@ -411,6 +445,7 @@ def render_ai_variations(project_id, filename, video_path, transcription, segmen
     auto_cuts folder.
     """
     resolved_preset = resolve_style_preset(project_id)
+    framing = get_project_framing(project_id)
     transition_style, transition_duration = processor.get_transition_settings()
     animation, fade_ms = processor.get_subtitle_animation_settings()
 
@@ -452,7 +487,7 @@ def render_ai_variations(project_id, filename, video_path, transcription, segmen
                     raw_path, target_duration=dur, total_dur=total_dur,
                     transition=transition_style, transition_duration=transition_duration,
                     animation=animation, fade_ms=fade_ms,
-                    burn=False, return_slices=True,
+                    burn=False, return_slices=True, framing=framing,
                 )
             except Exception as re_raw:
                 log.error("Error rendering AI raw variation %s: %s", dur_name, re_raw)
@@ -482,11 +517,16 @@ def render_ai_variations(project_id, filename, video_path, transcription, segmen
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO ai_montages (project_id, name, description, order_json, filepath_subbed, filepath_raw)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (project_id, dur_name, dur_desc, json.dumps(var_order), sub_path, raw_path))
+                INSERT INTO ai_montages (project_id, name, description, order_json, filepath_subbed, filepath_raw, score)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (project_id, dur_name, dur_desc, json.dumps(var_order), sub_path, raw_path, var.get("score")))
             conn.commit()
             conn.close()
+
+            # Poster thumbnails for the dashboard.
+            for outp in (raw_path, sub_path):
+                if outp and os.path.exists(outp):
+                    render_engine.generate_thumbnail(outp)
 
             # Mirror the raw variation into the daily auto_cuts folder.
             if raw_path and os.path.exists(raw_path):
@@ -623,13 +663,14 @@ def bg_run_manual_render(project_id: int, filename: str, video_path: str, segmen
 
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT font_family, zoom_effect, bg_music_path FROM projects WHERE id = ?", (project_id,))
+        cursor.execute("SELECT font_family, zoom_effect, bg_music_path, framing FROM projects WHERE id = ?", (project_id,))
         p_row = cursor.fetchone()
         conn.close()
 
         font_family = p_row[0] if (p_row and p_row[0]) else "Montserrat"
         zoom_effect = int(p_row[1]) if (p_row and p_row[1] is not None) else 1
         bg_music_path = p_row[2] if (p_row and p_row[2]) else None
+        framing = p_row[3] if (p_row and p_row[3]) else "auto"
         resolved_preset = resolve_style_preset(project_id, default=style_preset or "Bold Yellow")
 
         if is_project_stopped(project_id):
@@ -679,7 +720,7 @@ def bg_run_manual_render(project_id: int, filename: str, video_path: str, segmen
                         total_dur=manual_total_dur, transition=transition_style,
                         transition_duration=transition_duration,
                         animation=animation, fade_ms=fade_ms,
-                        burn=False, return_slices=True,
+                        burn=False, return_slices=True, framing=framing,
                     )
                 except Exception as ex_raw:
                     log.error("Error re-rendering AI variation raw: %s", ex_raw)
@@ -775,6 +816,7 @@ class RenderRequest(BaseModel):
     font_family: Optional[str] = "Montserrat"
     zoom_effect: Optional[int] = 1
     segments_map: Optional[dict] = None
+    framing: Optional[str] = None  # auto | crop | fit_blur | fit_black
 
 
 class SubtitlePromptRequest(BaseModel):
@@ -842,7 +884,7 @@ def get_project_details(project_id: int):
     cursor = conn.cursor()
     cursor.execute("""
         SELECT id, filename, status, segments_map_json, transcript_json, style_preset,
-               font_family, zoom_effect, bg_music_path, custom_preset_json
+               font_family, zoom_effect, bg_music_path, custom_preset_json, framing, marketing_json
         FROM projects WHERE id = ?
     """, (project_id,))
     row = cursor.fetchone()
@@ -855,7 +897,7 @@ def get_project_details(project_id: int):
     cuts_rows = cursor.fetchall()
 
     cursor.execute("""
-        SELECT name, description, order_json, filepath_subbed, filepath_raw
+        SELECT name, description, order_json, filepath_subbed, filepath_raw, score
         FROM ai_montages WHERE project_id = ?
     """, (project_id,))
     ai_rows = cursor.fetchall()
@@ -872,9 +914,17 @@ def get_project_details(project_id: int):
             "order": json.loads(order_json),
             "filename_subbed": os.path.basename(filepath_sub) if filepath_sub else None,
             "filename_raw": os.path.basename(filepath_raw) if filepath_raw else None,
+            "score": score,
         }
-        for name, desc, order_json, filepath_sub, filepath_raw in ai_rows
+        for name, desc, order_json, filepath_sub, filepath_raw, score in ai_rows
     ]
+
+    marketing = None
+    if row[11]:
+        try:
+            marketing = json.loads(row[11])
+        except ValueError:
+            pass
 
     return {
         "id": row[0],
@@ -887,6 +937,8 @@ def get_project_details(project_id: int):
         "zoom_effect": row[7] if row[7] is not None else 1,
         "bg_music_path": os.path.basename(row[8]) if row[8] else None,
         "custom_preset": json.loads(row[9]) if row[9] else None,
+        "framing": row[10] or "auto",
+        "marketing": marketing,
         "cuts": cuts,
         "ai_montages": ai_montages,
     }
@@ -1057,13 +1109,15 @@ def trigger_render(project_id: int, req: RenderRequest, background_tasks: Backgr
             d["words"] = [dict(w) for w in s.words] if s.words else []
         segments_list.append(d)
 
+    framing = req.framing if (req.framing in render_engine.FRAMING_MODES) else None
     cursor.execute("""
         UPDATE projects
         SET style_preset = ?, font_family = ?, zoom_effect = ?, transcript_json = ?,
-            segments_map_json = ?, status = 'rendering', stop_requested = 0, error_message = NULL
+            segments_map_json = ?, framing = COALESCE(?, framing),
+            status = 'rendering', stop_requested = 0, error_message = NULL
         WHERE id = ?
     """, (req.style_preset, req.font_family, req.zoom_effect, json.dumps(segments_list),
-          json.dumps(segments_map), project_id))
+          json.dumps(segments_map), framing, project_id))
     conn.commit()
     conn.close()
 
@@ -1091,6 +1145,174 @@ def stop_project(project_id: int):
 
     broadcast_sync({"type": "status", "project_id": project_id, "status": "failed", "error": "Stopped by user"})
     return {"status": "success", "message": "Project rendering stopped successfully."}
+
+
+def _project_artifact_paths(project_id, cursor):
+    """All files a project owns on disk: cuts, montages, sidecar .ass/.jpg files."""
+    paths = []
+    cursor.execute("SELECT filepath FROM cuts WHERE project_id = ?", (project_id,))
+    paths += [r[0] for r in cursor.fetchall() if r[0]]
+    cursor.execute("SELECT filepath_subbed, filepath_raw FROM ai_montages WHERE project_id = ?", (project_id,))
+    for sub, raw in cursor.fetchall():
+        paths += [p for p in (sub, raw) if p]
+    with_sidecars = []
+    for p in paths:
+        with_sidecars += [p, p + ".ass", p + ".jpg"]
+    return with_sidecars
+
+
+@app.post("/api/projects/{project_id}/retry")
+def retry_project(project_id: int):
+    """Requeues a project for a full re-run (used on failed or completed projects)."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT status FROM projects WHERE id = ?", (project_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Project not found")
+    if row[0] in ("pending", "queued", "analyzing", "rendering"):
+        conn.close()
+        raise HTTPException(status_code=400, detail="Project is already queued or processing.")
+
+    # Old montage rows would duplicate on the re-run; the files get overwritten.
+    cursor.execute("DELETE FROM ai_montages WHERE project_id = ?", (project_id,))
+    cursor.execute("""
+        UPDATE projects SET status = 'pending', progress = 0, stop_requested = 0, error_message = NULL
+        WHERE id = ?
+    """, (project_id,))
+    conn.commit()
+    conn.close()
+    broadcast_sync({"type": "status", "project_id": project_id, "status": "pending", "progress": 0})
+    return {"status": "pending"}
+
+
+@app.delete("/api/projects/{project_id}")
+def delete_project(project_id: int):
+    """Removes a project: DB rows plus every file it produced or uploaded."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT filename, bg_music_path FROM projects WHERE id = ?", (project_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Project not found")
+    filename, bg_music_path = row
+
+    render_engine.terminate_project_processes(project_id)
+
+    doomed = _project_artifact_paths(project_id, cursor)
+    doomed.append(os.path.join(database.RAW_DIR, filename))
+    raw_main = os.path.join(database.RAW_DIR, filename)
+    doomed += [raw_main + ".peaks.json"]
+
+    cursor.execute("DELETE FROM cuts WHERE project_id = ?", (project_id,))
+    cursor.execute("DELETE FROM ai_montages WHERE project_id = ?", (project_id,))
+    cursor.execute("DELETE FROM subtitle_corrections WHERE project_id = ?", (project_id,))
+    cursor.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    conn.commit()
+    conn.close()
+
+    removed = 0
+    for path in doomed:
+        try:
+            if path and os.path.isfile(path):
+                os.remove(path)
+                removed += 1
+        except OSError:
+            pass
+    music_dir = os.path.join(database.RAW_DIR, f"project_{project_id}_music")
+    if bg_music_path and os.path.isdir(music_dir):
+        shutil.rmtree(music_dir, ignore_errors=True)
+
+    log.info("Deleted project %s (%d files removed).", project_id, removed)
+    return {"status": "deleted", "files_removed": removed}
+
+
+@app.post("/api/projects/{project_id}/marketing")
+def regenerate_marketing(project_id: int):
+    """(Re)generates the AI marketing pack for a project on demand."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT transcript_json FROM projects WHERE id = ?", (project_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not row[0]:
+        raise HTTPException(status_code=400, detail="Project has no transcript yet.")
+
+    pack = ai_editor.generate_marketing_pack(json.loads(row[0]))
+    if not pack:
+        raise HTTPException(status_code=502, detail="The AI engine did not return usable copy. Check the AI connection in Settings.")
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE projects SET marketing_json = ? WHERE id = ?", (json.dumps(pack), project_id))
+    conn.commit()
+    conn.close()
+    return pack
+
+
+@app.get("/api/projects/{project_id}/waveform")
+def project_waveform(project_id: int, buckets: int = 240):
+    """
+    Amplitude peaks of the source audio for the timeline (cached on disk).
+    Returns {"peaks": [0..1 floats], "duration": seconds}.
+    """
+    buckets = max(40, min(1000, buckets))
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT filename FROM projects WHERE id = ?", (project_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    raw_path = os.path.join(database.RAW_DIR, row[0])
+    if not os.path.exists(raw_path):
+        raise HTTPException(status_code=404, detail="Source file not available.")
+
+    cache_path = raw_path + ".peaks.json"
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            pass
+
+    import array
+    import subprocess
+    # Binary PCM must bypass the text-mode run_command helper.
+    try:
+        proc = subprocess.run(
+            [render_engine.FFMPEG_BIN, "-v", "error", "-i", raw_path, "-map", "a:0?",
+             "-ac", "1", "-ar", "4000", "-f", "s16le", "-"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            env=render_engine.get_ffmpeg_env(), timeout=180,
+        )
+        pcm = proc.stdout or b""
+    except (OSError, subprocess.SubprocessError):
+        pcm = b""
+    duration = render_engine.get_video_duration(raw_path)
+    samples = array.array("h")
+    usable = len(pcm) - (len(pcm) % 2)
+    if usable:
+        samples.frombytes(pcm[:usable])
+
+    peaks = []
+    if len(samples) > 0:
+        step = max(1, len(samples) // buckets)
+        for i in range(0, len(samples) - step + 1, step):
+            chunk = samples[i:i + step]
+            peaks.append(round(max(abs(s) for s in chunk) / 32768.0, 3))
+    payload = {"peaks": peaks, "duration": duration}
+    try:
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+    except OSError:
+        pass
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -1318,6 +1540,9 @@ def get_system_settings():
         "transition_duration": database.get_setting("transition_duration", "0.4"),
         "subtitle_animation": database.get_setting("subtitle_animation", "none"),
         "subtitle_fade_ms": database.get_setting("subtitle_fade_ms", "150"),
+        "silence_removal": database.get_setting("silence_removal", "1"),
+        "audio_normalize": database.get_setting("audio_normalize", "1"),
+        "whisper_language": database.get_setting("whisper_language", "auto"),
         "agent_notes": agent_notes,
         "disk_usage": {
             "total_gb": round(total / (1024 ** 3), 2),

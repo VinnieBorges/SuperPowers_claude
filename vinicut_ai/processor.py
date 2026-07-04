@@ -267,12 +267,17 @@ def run_audio_transcription(video_path):
 
         model = _cached_whisper_model
 
+    # Optional forced language ("auto" lets Whisper detect it per video).
+    lang = (database.get_setting("whisper_language", "auto") or "auto").strip().lower()
+    language = None if lang in ("", "auto") else lang
+
     # Use beam_size=1 (greedy decoding) and vad_filter=True (silence skipping) to speed up transcription and reduce memory
     segments, info = model.transcribe(
         video_path,
         beam_size=1,
         vad_filter=True,
         word_timestamps=True,
+        language=language,
         initial_prompt=whisper_prompt
     )
 
@@ -412,13 +417,14 @@ def _render_final_cuts_impl(conn, project_id, filename, original_video_path, seg
     cursor = conn.cursor()
 
     # Retrieve customized rendering configurations
-    cursor.execute("SELECT font_family, zoom_effect, bg_music_path, custom_preset_json FROM projects WHERE id = ?", (project_id,))
+    cursor.execute("SELECT font_family, zoom_effect, bg_music_path, custom_preset_json, framing FROM projects WHERE id = ?", (project_id,))
     p_row = cursor.fetchone()
 
     font_family = p_row[0] if (p_row and p_row[0]) else "Montserrat"
     zoom_effect = int(p_row[1]) if (p_row and p_row[1] is not None) else 1
     bg_music_path = p_row[2] if (p_row and p_row[2]) else None
     custom_preset_json = p_row[3] if (p_row and p_row[3]) else None
+    framing = p_row[4] if (p_row and p_row[4]) else "auto"
 
     # Boundary transition style (cross-fade between Hook/Demo/CTA segments)
     transition_style, transition_duration = get_transition_settings()
@@ -484,7 +490,8 @@ def _render_final_cuts_impl(conn, project_id, filename, original_video_path, seg
                 original_video_path, seg_dict, dur, cut_path_raw,
                 segments=segments, zoom_effect=zoom_effect, bg_music_path=bg_music_path,
                 transition=transition_style, transition_duration=transition_duration,
-                total_dur=total_dur, return_slices=True, progress_callback=get_step_cb(idx * 2)
+                total_dur=total_dur, return_slices=True, progress_callback=get_step_cb(idx * 2),
+                framing=framing
             )
             if not os.path.exists(cut_path_raw):
                 raise RuntimeError(f"FFmpeg produced no output for the {dur}s cut.")
@@ -521,6 +528,10 @@ def _render_final_cuts_impl(conn, project_id, filename, original_video_path, seg
                 INSERT INTO cuts (project_id, cut_type, start_time, end_time, filepath)
                 VALUES (?, ?, ?, ?, ?)
             """, (project_id, f"{dur}s", 0.0, float(dur), cut_path))
+
+            # Poster thumbnails so the dashboard previews load instantly.
+            render_engine.generate_thumbnail(cut_path_raw)
+            render_engine.generate_thumbnail(cut_path)
 
             # Auto-copy raw cuts to watch outputs
             dest_name = f"{base_name}_{dur}s_raw.mp4"
@@ -559,7 +570,8 @@ def _render_final_cuts_impl(conn, project_id, filename, original_video_path, seg
                 transition=transition_style,
                 transition_duration=transition_duration,
                 animation=animation,
-                fade_ms=fade_ms
+                fade_ms=fade_ms,
+                framing=framing
             )
             cut_paths["custom"] = custom_path
 
@@ -567,6 +579,7 @@ def _render_final_cuts_impl(conn, project_id, filename, original_video_path, seg
                 INSERT INTO cuts (project_id, cut_type, start_time, end_time, filepath)
                 VALUES (?, ?, ?, ?, ?)
             """, (project_id, "custom", 0.0, get_video_duration(custom_path), custom_path))
+            render_engine.generate_thumbnail(custom_path)
         except Exception as e:
             log.error("Error rendering custom reordered cut: %s", e)
 
@@ -587,7 +600,8 @@ def _render_final_cuts_impl(conn, project_id, filename, original_video_path, seg
                 transition=transition_style,
                 transition_duration=transition_duration,
                 animation=animation,
-                fade_ms=fade_ms
+                fade_ms=fade_ms,
+                framing=framing
             )
             cut_paths["custom_raw"] = custom_path_raw
 
@@ -595,6 +609,7 @@ def _render_final_cuts_impl(conn, project_id, filename, original_video_path, seg
                 INSERT INTO cuts (project_id, cut_type, start_time, end_time, filepath)
                 VALUES (?, ?, ?, ?, ?)
             """, (project_id, "custom_raw", 0.0, get_video_duration(custom_path_raw), custom_path_raw))
+            render_engine.generate_thumbnail(custom_path_raw)
 
             # Auto-copy custom raw cut
             dest_custom_name = f"{base_name}_custom_reordered_raw.mp4"

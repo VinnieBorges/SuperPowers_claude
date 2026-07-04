@@ -88,6 +88,10 @@ STANDARD_CUT_DURATIONS = (5, 15, 30, 60)
 RAW_RETENTION_DAYS = env_int("VINICUT_RAW_RETENTION_DAYS", 7)
 CLEANUP_INTERVAL_SECONDS = env_int("VINICUT_CLEANUP_INTERVAL", 3600)
 
+# Concurrent project workers. 1 is the safe default; 2-3 works well on GPUs
+# with spare NVENC sessions (consumer NVIDIA cards allow 3-5 concurrent).
+WORKERS = max(1, min(4, env_int("VINICUT_WORKERS", 1)))
+
 # ---------------------------------------------------------------------------
 # AI providers
 # ---------------------------------------------------------------------------

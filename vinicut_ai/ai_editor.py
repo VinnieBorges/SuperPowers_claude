@@ -41,11 +41,20 @@ _SYSTEM_PROMPT = (
 # ---------------------------------------------------------------------------
 
 def _fmt_transcript(transcription, max_chars=6000):
-    """Renders the transcript as timestamped lines the model can reason over."""
+    """
+    Renders the transcript as timestamped lines the model can reason over,
+    annotating silent gaps > 0.6s — pauses are where cuts belong, and telling
+    the model where they are measurably improves its boundary choices.
+    """
     lines = []
+    prev_end = None
     for seg in transcription or []:
         try:
-            lines.append(f"[{float(seg['start']):.2f}-{float(seg['end']):.2f}] {str(seg.get('text', '')).strip()}")
+            start, end = float(seg["start"]), float(seg["end"])
+            if prev_end is not None and start - prev_end > 0.6:
+                lines.append(f"[silence {start - prev_end:.1f}s]")
+            lines.append(f"[{start:.2f}-{end:.2f}] {str(seg.get('text', '')).strip()}")
+            prev_end = end
         except (KeyError, TypeError, ValueError):
             continue
     text = "\n".join(lines)
@@ -148,10 +157,16 @@ def _sanitize_variations(data):
         if not order:
             continue
         name = str(var.get("name", "")).strip() or f"Variation {len(variations) + 1}"
+        score = var.get("score")
+        try:
+            score = max(0, min(100, int(score)))
+        except (TypeError, ValueError):
+            score = None
         variations.append({
             "name": name[:60],
             "description": str(var.get("description", "")).strip()[:200],
             "order": order,
+            "score": score,
         })
         if len(variations) >= 4:
             break
@@ -237,7 +252,9 @@ Tasks:
    close to the target. Always include some hook material first and CTA
    material last (except 5s, which is hook-only).
 3. Propose 3 creative montage variations that re-order the parts (using only
-   "Hook", "Demo", "CTA") with a short marketing rationale for each.
+   "Hook", "Demo", "CTA") with a short marketing rationale for each, plus an
+   honest retention/virality score from 0-100 (how likely this structure is to
+   hold viewers and convert, given THIS script).
 
 Return ONLY this JSON shape (numbers in seconds):
 {{
@@ -251,7 +268,7 @@ Return ONLY this JSON shape (numbers in seconds):
     "60s": [[0.0, {total_dur:.2f}]]
   }},
   "variations": [
-    {{"name": "Curiosity Loop", "description": "Why it works.", "order": ["CTA", "Hook", "Demo"]}}
+    {{"name": "Curiosity Loop", "description": "Why it works.", "order": ["CTA", "Hook", "Demo"], "score": 78}}
   ]
 }}"""
 
@@ -277,3 +294,60 @@ Return ONLY this JSON shape (numbers in seconds):
         len(result["standard_cuts"]), len(result["variations"]),
     )
     return result
+
+
+def generate_marketing_pack(transcription):
+    """
+    Generates ready-to-post marketing copy for the project: alternative hooks,
+    platform captions, hashtags and CTA lines — in the transcript's language.
+    Returns a sanitized dict, or None when the model is unavailable.
+    """
+    transcript_text = _fmt_transcript(transcription, max_chars=4000)
+    if not transcript_text.strip():
+        return None
+
+    prompt = f"""This is the transcript of a short-form UGC product ad:
+
+{transcript_text}
+
+Write a marketing pack IN THE SAME LANGUAGE as the transcript. Return ONLY JSON:
+{{
+  "hooks": ["3-5 alternative opening hook lines, each under 12 words"],
+  "captions": {{
+    "tiktok": "post caption tuned for TikTok, with a strong first line",
+    "instagram": "post caption tuned for Instagram Reels"
+  }},
+  "hashtags": ["8-12 relevant hashtags without the # sign"],
+  "cta_lines": ["2-3 closing call-to-action lines"]
+}}"""
+    try:
+        data = llm.chat_json(prompt, system=_SYSTEM_PROMPT, temperature=0.6)
+    except Exception as e:
+        log.warning("Marketing pack generation failed: %s", e)
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    def _strs(value, limit, maxlen=220):
+        out = []
+        for item in (value or []) if isinstance(value, list) else []:
+            s = str(item).strip().lstrip("#")
+            if s:
+                out.append(s[:maxlen])
+            if len(out) >= limit:
+                break
+        return out
+
+    captions = data.get("captions") if isinstance(data.get("captions"), dict) else {}
+    pack = {
+        "hooks": _strs(data.get("hooks"), 5),
+        "captions": {
+            "tiktok": str(captions.get("tiktok", "")).strip()[:500],
+            "instagram": str(captions.get("instagram", "")).strip()[:500],
+        },
+        "hashtags": _strs(data.get("hashtags"), 12, maxlen=40),
+        "cta_lines": _strs(data.get("cta_lines"), 3),
+    }
+    if not (pack["hooks"] or pack["hashtags"] or pack["captions"]["tiktok"]):
+        return None
+    return pack

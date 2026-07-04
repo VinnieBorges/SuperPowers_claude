@@ -287,7 +287,8 @@
   td.c-status .statrow { display: flex; align-items: center; gap: 8px; }
   td.c-status .progress-track { margin-top: 5px; max-width: 150px; }
   td.c-date { width: 100px; font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); white-space: nowrap; }
-  td.c-act { width: 90px; text-align: right; white-space: nowrap; }
+  td.c-act { width: 200px; text-align: right; white-space: nowrap; }
+  td.c-act .btn { margin-left: 5px; }
 
   .empty {
     text-align: center; color: var(--text-faint); padding: 48px 20px;
@@ -841,7 +842,16 @@ async function loadProjects(){
         const prog = isProc ? `
           <div class="progress-track"><div class="progress-fill" style="width:${p.progress || 0}%"></div></div>` : '';
         const ptext = isProc ? `<span class="progress-text">${Number(p.progress||0).toFixed(0)}%</span>` : '';
-        const stopBtn = isProc ? `<button class="btn danger sm" onclick="event.stopPropagation();doStopProjectHome(${p.id})">Stop</button>` : '';
+        let actions = '';
+        if (isProc) {
+          actions = `<button class="btn danger sm" onclick="event.stopPropagation();doStopProjectHome(${p.id})">Stop</button>`;
+        } else {
+          const retry = p.status === 'failed'
+            ? `<button class="btn ghost sm" title="Re-run the full pipeline" onclick="event.stopPropagation();doRetryProject(${p.id})">Retry</button>` : '';
+          actions = `${retry}
+            <button class="btn ghost sm" onclick="event.stopPropagation();openProject(${p.id})">Open</button>
+            <button class="btn danger sm" title="Delete project and all its files" onclick="event.stopPropagation();doDeleteProject(${p.id})">Delete</button>`;
+        }
         return `
         <tr id="project-card-${p.id}" ${errorAttr} data-name="${esc(p.filename.toLowerCase())}" onclick="openProject(${p.id})">
           <td class="c-check"><input type="checkbox" onclick="event.stopPropagation();toggleSel(${p.id},this.checked)" ${selected.has(p.id)?'checked':''}/></td>
@@ -854,7 +864,7 @@ async function loadProjects(){
             ${prog}
           </td>
           <td class="c-date">${esc((p.created_at||'').split(' ')[0])}</td>
-          <td class="c-act">${stopBtn || `<button class="btn ghost sm" onclick="event.stopPropagation();openProject(${p.id})">Open</button>`}</td>
+          <td class="c-act">${actions}</td>
         </tr>`;
       }).join('')}
       </tbody>
@@ -868,6 +878,29 @@ function filterProjects() {
   document.querySelectorAll('table.projects tbody tr').forEach(el => {
     el.style.display = (el.getAttribute('data-name')||'').includes(q) ? '' : 'none';
   });
+}
+
+async function doRetryProject(id) {
+  try {
+    await API.req(`/api/projects/${id}/retry`, {method: 'POST'});
+    toast(`Project #${id} requeued.`, 'ok');
+    loadProjects();
+  } catch(e) {
+    toast('Retry failed: ' + e.message, 'err');
+  }
+}
+
+async function doDeleteProject(id) {
+  if(!await uiConfirm('Delete project', `Delete project #${id} and every file it produced (source upload, cuts, montages)? This cannot be undone.`, 'Delete project', true)) return;
+  try {
+    await API.req(`/api/projects/${id}`, {method: 'DELETE'});
+    toast(`Project #${id} deleted.`, 'ok');
+    selected.delete(id);
+    toggleSel(id, false);
+    loadProjects();
+  } catch(e) {
+    toast('Delete failed: ' + e.message, 'err');
+  }
 }
 
 async function doStopProjectHome(id) {
@@ -907,6 +940,7 @@ async function openProject(id){
   stopPoll(); location.hash='p'+id;
   $('#backBtn').style.display='';
   view.innerHTML='<div class="empty" style="margin-top:60px;"><span class="spinner"></span><div>Loading project…</div></div>';
+  loadWaveform(id);
   await refreshDetail(id, true);
   poll = setInterval(async ()=>{ if(cur && ['pending','queued','analyzing','rendering'].includes(cur.status)) await refreshDetail(id,false); }, 3500);
 }
@@ -972,7 +1006,8 @@ function drawDetail(p){
           <div class="inspector">
             <div class="rail">
               ${railBtn('deliver', IC.film, 'Deliverables')}
-              ${railBtn('style', IC.type, 'Captions style')}
+              ${railBtn('copy', IC.clip, 'Marketing copy')}
+              ${railBtn('style', IC.type, 'Style & framing')}
               ${railBtn('seq', IC.seq, 'Sequence order')}
               ${railBtn('caps', IC.cap, 'Caption info')}
               ${railBtn('audio', IC.music, 'Music')}
@@ -1009,13 +1044,40 @@ function railBtn(tab, icon, title){
 }
 
 /* ---------------- timeline ---------------- */
+let wavePeaks = null;   // real audio peaks for the open project (0..1 floats)
+let wavePid = null;
+
+async function loadWaveform(projectId){
+  if (wavePid === projectId && wavePeaks) return;
+  wavePid = projectId; wavePeaks = null;
+  try {
+    const data = await API.req(`/api/projects/${projectId}/waveform`);
+    if (wavePid !== projectId) return; // user navigated away
+    if (data.peaks && data.peaks.length) {
+      wavePeaks = data.peaks;
+      const overlay = $('#waveformOverlay');
+      if (overlay) overlay.innerHTML = makeWaveformSvg(1000, 34);
+    }
+  } catch(e) { /* decorative fallback stays */ }
+}
+
 function makeWaveformSvg(width=1000, height=34) {
   let bars = '';
-  for (let i = 0; i < width; i += 4) {
-    let h = Math.abs(Math.sin(i * 0.047) * 11) + Math.abs(Math.cos(i * 0.131) * 7) + (i % 7) * 0.6;
-    h = Math.min(height - 6, Math.max(3, h));
-    const y = (height - h) / 2;
-    bars += `<rect x="${i}" y="${y.toFixed(1)}" width="2" height="${h.toFixed(1)}" rx="1" fill="#8a8a92" opacity="0.14"/>`;
+  if (wavePeaks && wavePeaks.length) {
+    const n = wavePeaks.length;
+    const bw = width / n;
+    for (let i = 0; i < n; i++) {
+      let h = Math.max(2, wavePeaks[i] * (height - 4));
+      const y = (height - h) / 2;
+      bars += `<rect x="${(i * bw).toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(1, bw - 1).toFixed(1)}" height="${h.toFixed(1)}" rx="0.5" fill="#a8a8b0" opacity="0.28"/>`;
+    }
+  } else {
+    for (let i = 0; i < width; i += 4) {
+      let h = Math.abs(Math.sin(i * 0.047) * 11) + Math.abs(Math.cos(i * 0.131) * 7) + (i % 7) * 0.6;
+      h = Math.min(height - 6, Math.max(3, h));
+      const y = (height - h) / 2;
+      bars += `<rect x="${i}" y="${y.toFixed(1)}" width="2" height="${h.toFixed(1)}" rx="1" fill="#8a8a92" opacity="0.14"/>`;
+    }
   }
   return `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" style="width:100%;height:100%;display:block;position:absolute;inset:0;pointer-events:none;">${bars}</svg>`;
 }
@@ -1215,8 +1277,21 @@ function drawToolsSidebar() {
     contentHtml = processing ? progressHtml(p) : outputsHtml(p);
   }
   else if (activeToolTab === 'style') {
-    headerTitle = 'Caption style';
+    headerTitle = 'Style & framing';
+    const framings = [
+      ['auto', 'Auto — smart per source (recommended)'],
+      ['fit_blur', 'Fit — blurred background'],
+      ['crop', 'Fill — crop to 9:16'],
+      ['fit_black', 'Fit — black bars']
+    ];
+    const frOpts = framings.map(([v, lab]) =>
+      `<option value="${v}" ${v === (p.framing || 'auto') ? 'selected' : ''}>${lab}</option>`).join('');
     contentHtml = `
+      <div class="field">
+        <label class="field-label">Framing (9:16 canvas)</label>
+        <select id="st_framing">${frOpts}</select>
+        <div style="font-size:10.5px;color:var(--text-faint);">How non-vertical footage is placed on the 1080×1920 canvas. Auto crops portrait sources and blur-fits wide ones so nothing important is cut off.</div>
+      </div>
       <div class="field">
         <label class="field-label">Preset</label>
         ${selectHtml('st_style', STYLES, p.style_preset)}
@@ -1237,6 +1312,10 @@ function drawToolsSidebar() {
         <input type="checkbox" id="st_zoom" ${(p.zoom_effect??1)?'checked':''} style="width:auto;margin:0;"/>
         Punch-in zoom on Hook and CTA
       </label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12.5px;" title="Skips silent gaps between words for tighter jump-cut pacing">
+        <input type="checkbox" id="st_silence" checked style="width:auto;margin:0;"/>
+        Remove silences (tighter jump cuts)
+      </label>
       <hr class="divider"/>
       <div class="field">
         <label class="field-label">Describe a custom style</label>
@@ -1252,8 +1331,17 @@ function drawToolsSidebar() {
         <input type="file" id="se_font_file" accept=".ttf,.otf"/>
       </div>
     `;
-    setTimeout(() => {
+    setTimeout(async () => {
       loadFontsInto(p.font_family);
+      try {
+        const s = await API.settings();
+        const sil = $('#st_silence');
+        if (sil) sil.checked = String(s.silence_removal ?? '1') === '1';
+        const tr = $('#st_trans');
+        if (tr && s.transition_style) tr.value = s.transition_style;
+        const an = $('#st_anim');
+        if (an && s.subtitle_animation) an.value = s.subtitle_animation;
+      } catch(e) {}
       const fu = $('#se_font_file');
       if (fu) {
         fu.onchange = async function() {
@@ -1281,6 +1369,41 @@ function drawToolsSidebar() {
       </div>
     `;
     setTimeout(drawOrder, 10);
+  }
+  else if (activeToolTab === 'copy') {
+    headerTitle = 'Marketing copy';
+    const mk = p.marketing;
+    if (!mk) {
+      contentHtml = `
+        <div class="note">No marketing pack yet. Generate ready-to-post hooks, captions and hashtags from this video's script with the AI engine.</div>
+        <button class="btn sm" onclick="genMarketing(this)" style="align-self:flex-start;">Generate copy pack</button>`;
+    } else {
+      const block = (label, text) => text ? `
+        <div class="field">
+          <label class="field-label">${label}</label>
+          <div class="note" style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;">
+            <span style="white-space:pre-wrap;">${esc(text)}</span>
+            <button class="btn ghost sm" onclick="copyText(this, ${JSON.stringify(text).replace(/"/g,'&quot;')})">Copy</button>
+          </div>
+        </div>` : '';
+      const list = (label, items) => (items && items.length) ? `
+        <div class="field">
+          <label class="field-label">${label}</label>
+          ${items.map(t => `
+            <div class="note" style="display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:4px;">
+              <span>${esc(t)}</span>
+              <button class="btn ghost sm" onclick="copyText(this, ${JSON.stringify(t).replace(/"/g,'&quot;')})">Copy</button>
+            </div>`).join('')}
+        </div>` : '';
+      const tags = (mk.hashtags || []).map(t => '#' + t).join(' ');
+      contentHtml = `
+        ${list('Alternative hooks', mk.hooks)}
+        ${block('TikTok caption', mk.captions && mk.captions.tiktok)}
+        ${block('Instagram caption', mk.captions && mk.captions.instagram)}
+        ${block('Hashtags', tags)}
+        ${list('CTA lines', mk.cta_lines)}
+        <button class="btn ghost sm" onclick="genMarketing(this)" style="align-self:flex-start;">Regenerate</button>`;
+    }
   }
   else if (activeToolTab === 'caps') {
     headerTitle = 'Caption info';
@@ -1378,6 +1501,11 @@ function drawToolsSidebar() {
             <label class="field-label">Transcription model</label>
             <input type="text" id="se_whisper" value="${esc(s.whisper_model||'')}"/>
           </div>
+          <div class="field">
+            <label class="field-label">Transcription language</label>
+            <input type="text" id="se_lang" value="${esc(s.whisper_language||'auto')}" placeholder="auto, pt, en, es…"/>
+            <div style="font-size:10.5px;color:var(--text-faint);">"auto" detects per video; forcing a code (e.g. pt) improves accuracy on noisy audio.</div>
+          </div>
           <button class="btn sm" onclick="saveSettings(this)" style="align-self:flex-start;">Save settings</button>
 
           <hr class="divider"/>
@@ -1438,11 +1566,12 @@ function outputsHtml(p){
     html += '<div class="deliv-group">Standard cuts</div>';
     html += have.map(([k, lab]) => {
       const sub = cuts[k], raw = cuts[k+'_raw'];
-      const prev = sub ? ('/cuts/'+encodeURIComponent(sub)) : (raw ? ('/cuts/'+encodeURIComponent(raw)) : null);
+      const prevName = sub || raw;
+      const prev = prevName ? ('/cuts/'+encodeURIComponent(prevName)) : null;
       return `
         <div class="deliv">
           <div class="deliv-title"><span>${lab}</span></div>
-          ${prev ? `<video src="${prev}" controls preload="none"></video>` : ''}
+          ${prev ? `<video src="${prev}" poster="${prev}.jpg" controls preload="none"></video>` : ''}
           <div class="deliv-actions">
             ${sub ? `<button class="btn sm" onclick="dl('/api/projects/${p.id}/download/${k}/true')">Subtitled</button>` : ''}
             ${raw ? `<button class="btn ghost sm" onclick="dl('/api/projects/${p.id}/download/${k}/false')">Raw</button>` : ''}
@@ -1454,13 +1583,17 @@ function outputsHtml(p){
   if (ai.length) {
     html += '<div class="deliv-group">AI montages</div>';
     html += ai.map(m => {
-      const prev = m.filename_subbed ? ('/cuts/'+encodeURIComponent(m.filename_subbed)) : (m.filename_raw ? ('/cuts/'+encodeURIComponent(m.filename_raw)) : null);
+      const prevName = m.filename_subbed || m.filename_raw;
+      const prev = prevName ? ('/cuts/'+encodeURIComponent(prevName)) : null;
       const nm = encodeURIComponent(m.name);
+      const score = (m.score !== null && m.score !== undefined)
+        ? `<span title="AI retention estimate" style="font-family:var(--mono);font-size:10.5px;color:${m.score>=75?'var(--ok)':(m.score>=50?'var(--accent-h)':'var(--text-faint)')};border:1px solid var(--line-2);border-radius:3px;padding:1px 6px;">${m.score}</span>`
+        : '';
       return `
         <div class="deliv">
-          <div class="deliv-title"><span>${esc(m.name)}</span></div>
+          <div class="deliv-title"><span>${esc(m.name)}</span>${score}</div>
           ${m.description ? `<div class="deliv-desc">${esc(m.description)}</div>` : ''}
-          ${prev ? `<video src="${prev}" controls preload="none"></video>` : ''}
+          ${prev ? `<video src="${prev}" poster="${prev}.jpg" controls preload="none"></video>` : ''}
           <div class="deliv-actions">
             ${m.filename_subbed ? `<button class="btn sm" onclick="dl('/api/projects/${p.id}/download-ai/${nm}/true')">Subtitled</button>` : ''}
             ${m.filename_raw ? `<button class="btn ghost sm" onclick="dl('/api/projects/${p.id}/download-ai/${nm}/false')">Raw</button>` : ''}
@@ -1599,6 +1732,30 @@ async function loadFontsInto(current){
   sel.innerHTML=all.map(f=>`<option ${f===(current||'Montserrat')?'selected':''}>${esc(f)}</option>`).join('');
 }
 
+async function genMarketing(btn){
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Generating…';
+  try {
+    const pack = await API.req(`/api/projects/${cur.id}/marketing`, {method:'POST'});
+    cur.marketing = pack;
+    toast('Marketing pack ready.', 'ok');
+    drawToolsSidebar();
+  } catch(e) {
+    toast('Copy generation failed: ' + e.message, 'err');
+    btn.disabled = false;
+    btn.innerHTML = 'Generate copy pack';
+  }
+}
+
+async function copyText(btn, text){
+  try {
+    await navigator.clipboard.writeText(text);
+    const prev = btn.textContent;
+    btn.textContent = 'Copied';
+    setTimeout(()=>{ btn.textContent = prev; }, 1200);
+  } catch(e) { toast('Clipboard unavailable.', 'err'); }
+}
+
 async function genPreset(){
   const prompt=$('#st_prompt').value.trim(); if(!prompt){ toast('Describe a style first.','err'); return; }
   toast('Generating style…');
@@ -1617,9 +1774,11 @@ async function doRender(){
     const st_trans = $('#st_trans') ? $('#st_trans').value : 'fade';
     const st_anim = $('#st_anim') ? $('#st_anim').value : 'none';
     const st_zoom = $('#st_zoom') ? $('#st_zoom').checked : true;
+    const st_framing = $('#st_framing') ? $('#st_framing').value : (cur.framing || 'auto');
+    const st_silence = $('#st_silence') ? ($('#st_silence').checked ? '1' : '0') : '1';
     const segments_map = cur.segments_map;
 
-    await API.saveSettings({ transition_style:st_trans, subtitle_animation:st_anim });
+    await API.saveSettings({ transition_style:st_trans, subtitle_animation:st_anim, silence_removal:st_silence });
     const transcript = subState.map(s=>{ const o={start:s.start,end:s.end,text:s.text}; if(s.words && s.text===s.orig) o.words=s.words; return o; });
     await API.render(cur.id, {
       transcript,
@@ -1627,6 +1786,7 @@ async function doRender(){
       order:curOrder,
       font_family:st_font,
       zoom_effect:st_zoom?1:0,
+      framing:st_framing,
       segments_map
     });
 
@@ -1648,6 +1808,7 @@ async function saveSettings(btn){
   };
   if ($('#se_provider')) s.llm_provider = $('#se_provider').value;
   if ($('#se_claude')) s.anthropic_model = $('#se_claude').value;
+  if ($('#se_lang')) s.whisper_language = $('#se_lang').value.trim() || 'auto';
   Object.keys(s).forEach(k=>{ if(s[k]===undefined) delete s[k]; });
   btn.disabled = true;
   btn.textContent = 'Saving…';

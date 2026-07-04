@@ -87,6 +87,10 @@ def init_db():
         # Cooperative cancellation flag checked by the workers; replaces the old
         # scheme of abusing status='failed' as a stop signal.
         "stop_requested": "INTEGER DEFAULT 0",
+        # 9:16 framing mode for this source: auto | crop | fit_blur | fit_black.
+        "framing": "TEXT DEFAULT 'auto'",
+        # AI-generated marketing pack (hooks, captions, hashtags, CTA lines).
+        "marketing_json": "TEXT",
     })
 
     cursor.execute("""
@@ -162,6 +166,10 @@ def init_db():
         FOREIGN KEY (project_id) REFERENCES projects(id)
     )
     """)
+    _ensure_columns(cursor, "ai_montages", {
+        # AI retention/virality estimate (0-100) for this variation's structure.
+        "score": "INTEGER",
+    })
 
     # Indexes: the queue worker polls by status, and detail pages join by
     # project_id constantly.
@@ -183,6 +191,11 @@ def init_db():
         ("transition_duration", "0.4"),
         ("subtitle_animation", "none"),
         ("subtitle_fade_ms", "150"),
+        # High-end pipeline defaults
+        ("silence_removal", "1"),
+        ("silence_min_gap", "0.45"),
+        ("audio_normalize", "1"),
+        ("whisper_language", "auto"),
     ]
     for key, val in default_settings:
         cursor.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)", (key, val))
