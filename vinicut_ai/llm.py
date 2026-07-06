@@ -97,24 +97,29 @@ def test_connection(provider=None):
 # Provider backends
 # ---------------------------------------------------------------------------
 
-def _chat_ollama(prompt, system, temperature, model):
+def _chat_ollama(prompt, system, temperature, model, json_mode=False):
     model = model or database.get_setting("edit_model", config.OLLAMA_EDIT_MODEL)
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        # Keep the model resident between the pipeline's back-to-back calls
+        # (segmentation -> marketing pack -> hook scores) so only the first
+        # call pays the VRAM load cost.
+        "keep_alive": config.OLLAMA_KEEP_ALIVE,
+        "options": {"temperature": temperature, "num_ctx": config.OLLAMA_NUM_CTX},
+    }
+    if json_mode:
+        # Token-level JSON enforcement — small local models drift into prose
+        # without it; this eliminates most "returned non-JSON" retries.
+        payload["format"] = "json"
     resp = requests.post(
         f"{config.OLLAMA_HOST}/api/chat",
-        json={
-            "model": model,
-            "messages": messages,
-            "stream": False,
-            # Keep the model resident between the pipeline's back-to-back calls
-            # (segmentation -> marketing pack -> hook scores) so only the first
-            # call pays the VRAM load cost.
-            "keep_alive": config.OLLAMA_KEEP_ALIVE,
-            "options": {"temperature": temperature, "num_ctx": config.OLLAMA_NUM_CTX},
-        },
+        json=payload,
         timeout=config.LLM_TIMEOUT_SECONDS,
     )
     resp.raise_for_status()
@@ -143,7 +148,8 @@ def list_ollama_models():
         return []
 
 
-def _chat_anthropic(prompt, system, temperature, model):
+def _chat_anthropic(prompt, system, temperature, model, json_mode=False):
+    # json_mode is a no-op here: Claude follows "return ONLY JSON" reliably.
     model = model or database.get_setting("anthropic_model", config.ANTHROPIC_MODEL)
     payload = {
         "model": model,
@@ -168,7 +174,9 @@ def _chat_anthropic(prompt, system, temperature, model):
     return "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
 
 
-def _chat_openai(prompt, system, temperature, model):
+def _chat_openai(prompt, system, temperature, model, json_mode=False):
+    # json_mode intentionally not forwarded: not every OpenAI-compatible
+    # endpoint accepts response_format, and the prompts already demand JSON.
     model = model or database.get_setting("openai_model", config.OPENAI_MODEL)
     messages = []
     if system:
@@ -198,7 +206,17 @@ _BACKENDS = {
 # Public API
 # ---------------------------------------------------------------------------
 
-def chat(prompt, system=None, temperature=0.2, model=None, provider=None):
+def _is_connection_error(err):
+    """Dropped/reset connections (e.g. WinError 10054 when the Ollama runner
+    crashes mid-generation, typically from running out of GPU/RAM memory)."""
+    if isinstance(err, (ConnectionError, ConnectionResetError)):
+        return True
+    s = str(err).lower()
+    return ("10054" in s or "connection reset" in s or "connection aborted" in s
+            or "connection refused" in s or "remote host" in s)
+
+
+def chat(prompt, system=None, temperature=0.2, model=None, provider=None, json_mode=False):
     """
     Sends one prompt to the active provider and returns the assistant text.
     Raises LLMError after exhausting retries so callers can apply their own
@@ -209,20 +227,40 @@ def chat(prompt, system=None, temperature=0.2, model=None, provider=None):
     last_err = None
     for attempt in range(1 + config.LLM_MAX_RETRIES):
         try:
-            return backend(prompt, system, temperature, model)
+            result = backend(prompt, system, temperature, model, json_mode=json_mode)
+            if result is None or not str(result).strip():
+                # A blank reply usually means the local runner died or the
+                # prompt overflowed its context — retryable, never "success".
+                raise RuntimeError("empty response from model")
+            return result
         except Exception as e:
             last_err = e
-            wait = 2 ** attempt
+            # A reset connection means the local runner died and is respawning
+            # (often reloading the whole model) — give it real time to recover.
+            wait = 12 if _is_connection_error(e) else 2 ** attempt
             log.warning("LLM call failed via %s (attempt %d): %s. Retrying in %ss...",
                         provider, attempt + 1, e, wait)
             time.sleep(wait)
 
     msg = f"LLM chat failed via {provider}: {last_err}"
-    if provider == "ollama" and "timed out" in str(last_err).lower():
+    last_s = str(last_err).lower()
+    if provider == "ollama" and "timed out" in last_s:
         msg += (
             " — the local model looks too heavy/slow for this machine. "
             "In Settings > System pick a smaller Ollama model (a 12B is a good "
             "speed/quality balance), or raise VINICUT_LLM_TIMEOUT in .env."
+        )
+    elif provider == "ollama" and _is_connection_error(last_err):
+        msg += (
+            " — Ollama crashed or restarted mid-request, which usually means it "
+            "ran out of GPU/RAM memory. Close other GPU-heavy apps, pick a smaller "
+            "model in Settings > System, or restart Ollama and try again."
+        )
+    elif provider == "ollama" and "empty response" in last_s:
+        msg += (
+            " — the local model returned nothing, usually a memory/context limit. "
+            "Pick a smaller model in Settings > System, or lower "
+            "VINICUT_OLLAMA_NUM_CTX (e.g. 4096) in .env."
         )
     raise LLMError(msg)
 
@@ -270,10 +308,12 @@ def extract_json(text):
 
 def chat_json(prompt, system=None, temperature=0.1, model=None, provider=None):
     """
-    chat() + JSON extraction, re-asking once with an explicit correction prompt
-    if the first response isn't parseable.
+    chat() + JSON extraction. Local models get token-level JSON enforcement
+    (Ollama json mode); if parsing still fails, re-asks once with an explicit
+    correction prompt.
     """
-    raw = chat(prompt, system=system, temperature=temperature, model=model, provider=provider)
+    raw = chat(prompt, system=system, temperature=temperature, model=model,
+               provider=provider, json_mode=True)
     try:
         return extract_json(raw)
     except LLMError:
@@ -282,5 +322,6 @@ def chat_json(prompt, system=None, temperature=0.1, model=None, provider=None):
             f"{prompt}\n\nYour previous reply was not valid JSON. "
             "Reply again with ONLY the JSON object, no prose, no markdown fences."
         )
-        raw = chat(retry_prompt, system=system, temperature=0.0, model=model, provider=provider)
+        raw = chat(retry_prompt, system=system, temperature=0.0, model=model,
+                   provider=provider, json_mode=True)
         return extract_json(raw)

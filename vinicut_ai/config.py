@@ -136,6 +136,24 @@ WHISPER_MODEL_DEFAULT = env("VINICUT_WHISPER_MODEL", "large-v3")
 LOG_LEVEL = env("VINICUT_LOG_LEVEL", "INFO").upper()
 
 
+class _ClientDisconnectNoiseFilter(logging.Filter):
+    """
+    Drops the scary-but-meaningless ConnectionResetError (WinError 10054)
+    tracebacks Windows' proactor loop emits whenever a browser tab closes a
+    WebSocket or aborts a video preview request mid-stream.
+    """
+    def filter(self, record):
+        try:
+            if record.exc_info and isinstance(record.exc_info[1], (ConnectionResetError, ConnectionAbortedError)):
+                return False
+            msg = record.getMessage()
+            if "10054" in msg or "ConnectionResetError" in msg or "WinError 10054" in msg:
+                return False
+        except Exception:
+            pass
+        return True
+
+
 def setup_logging():
     logging.basicConfig(
         level=getattr(logging, LOG_LEVEL, logging.INFO),
@@ -145,6 +163,10 @@ def setup_logging():
     # FFmpeg spam lands on stderr, not the logger; keep third-party libs quieter.
     for noisy in ("botocore", "boto3", "urllib3", "httpx"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+    # Client-disconnect chatter on Windows is not an application error.
+    noise_filter = _ClientDisconnectNoiseFilter()
+    for name in ("asyncio", "uvicorn.error"):
+        logging.getLogger(name).addFilter(noise_filter)
 
 
 def get_logger(name):

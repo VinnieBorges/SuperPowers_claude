@@ -272,19 +272,59 @@ def t_ollama_model_listing_and_timeout_hint():
         except llm.LLMError as e:
             assert "smaller Ollama model" in str(e), e
 
-    # Ollama chat payload carries keep_alive + num_ctx.
+    # Ollama chat payload carries keep_alive + num_ctx; json_mode adds format.
     captured = {}
     class FakeChat:
         def raise_for_status(self): pass
-        def json(self): return {"message": {"content": "ok"}}
+        def json(self): return {"message": {"content": '{"ok": true}'}}
     def fake_post(url, json=None, timeout=None):
         captured.update(payload=json, timeout=timeout)
         return FakeChat()
     with mock.patch.object(llm.requests, "post", side_effect=fake_post):
         llm.chat("oi", provider="ollama", model="gemma4:12b")
+        assert "format" not in captured["payload"]          # plain chat: no forcing
+        out = llm.chat_json("oi", provider="ollama", model="gemma4:12b")
+    assert out == {"ok": True}
+    assert captured["payload"]["format"] == "json"          # token-level JSON mode
     assert captured["payload"]["keep_alive"] == cfg.OLLAMA_KEEP_ALIVE
     assert captured["payload"]["options"]["num_ctx"] == cfg.OLLAMA_NUM_CTX
     assert captured["timeout"] == cfg.LLM_TIMEOUT_SECONDS >= 300
+
+    # Connection resets (Ollama runner crash / WinError 10054) surface an
+    # out-of-memory hint and use the long recovery backoff.
+    sleeps = []
+    with mock.patch.object(llm.requests, "post",
+                           side_effect=ConnectionResetError("[WinError 10054] forcibly closed")), \
+         mock.patch.object(cfg, "LLM_MAX_RETRIES", 1), \
+         mock.patch.object(llm.time, "sleep", side_effect=lambda s: sleeps.append(s)):
+        try:
+            llm.chat("oi", provider="ollama")
+            raise AssertionError("should have raised")
+        except llm.LLMError as e:
+            assert "out of GPU/RAM memory" in str(e), e
+    assert sleeps and all(s >= 10 for s in sleeps), sleeps
+
+    # The Windows client-disconnect log filter mutes 10054 noise but keeps real errors.
+    import logging
+    f = cfg._ClientDisconnectNoiseFilter()
+    rec_noise = logging.LogRecord("asyncio", logging.ERROR, __file__, 1,
+                                  "ConnectionResetError: [WinError 10054] ...", None, None)
+    rec_real = logging.LogRecord("uvicorn.error", logging.ERROR, __file__, 1,
+                                 "Application startup failed", None, None)
+    assert f.filter(rec_noise) is False and f.filter(rec_real) is True
+
+    # An empty model reply is retried, then fails loudly with a num_ctx hint.
+    class EmptyChat:
+        def raise_for_status(self): pass
+        def json(self): return {"message": {"content": "   "}}
+    with mock.patch.object(llm.requests, "post", return_value=EmptyChat()), \
+         mock.patch.object(cfg, "LLM_MAX_RETRIES", 0), \
+         mock.patch.object(llm.time, "sleep"):
+        try:
+            llm.chat("oi", provider="ollama")
+            raise AssertionError("should have raised")
+        except llm.LLMError as e:
+            assert "returned nothing" in str(e) and "NUM_CTX" in str(e), e
 
 
 def t_hook_score_sanitizer():
@@ -564,6 +604,61 @@ def t_api_endpoints():
         client.delete(f"/api/projects/{meta_id}")
 
 
+def t_no_long_write_locks_during_render():
+    """
+    Regression: the render loop used to hold ONE SQLite write transaction open
+    for the entire multi-cut render, so any concurrent writer (e.g. an upload)
+    outlived its busy timeout and got "database is locked". A parallel writer
+    with a short timeout must succeed continuously while a render runs.
+    """
+    require_ffmpeg()
+    import sqlite3
+    import threading
+    import time as _time
+
+    filename = "lock_src.mp4"
+    shutil.copy2(FIXTURES["tiny"], os.path.join(database.RAW_DIR, filename))
+    pid = insert_project(filename)
+    total = render_engine.get_video_duration(os.path.join(database.RAW_DIR, filename))
+    plan = ai_editor.get_fallback_segmentation(total)
+    smap = {"hook": plan["hook"], "demo": plan["demo"], "cta": plan["cta"]}
+
+    errors = []
+    stop = threading.Event()
+
+    def writer():
+        while not stop.is_set():
+            try:
+                c = sqlite3.connect(database.DB_PATH, timeout=4.0)
+                c.execute("PRAGMA busy_timeout=4000")
+                c.execute("INSERT INTO projects (filename, status) VALUES ('lock_probe.mp4', 'completed')")
+                c.commit()
+                c.close()
+            except Exception as e:
+                errors.append(str(e))
+                break
+            _time.sleep(0.25)
+
+    t = threading.Thread(target=writer, daemon=True)
+    t.start()
+    try:
+        processor.render_final_cuts(
+            project_id=pid, filename=filename,
+            original_video_path=os.path.join(database.RAW_DIR, filename),
+            segments=fake_transcript(total), style_preset="Bold Yellow",
+            segments_map=smap, order=["Hook", "Demo", "CTA"],
+        )
+    finally:
+        stop.set()
+        t.join(timeout=10)
+    assert not errors, f"concurrent writer starved during render: {errors[0]}"
+
+    conn = database.get_db_connection()
+    conn.execute("DELETE FROM projects WHERE filename = 'lock_probe.mp4'")
+    conn.commit()
+    conn.close()
+
+
 def t_hook_swap_render():
     """New hook clip + base body: duration ≈ hook + body, true 1080x1920, subs burn."""
     require_ffmpeg()
@@ -691,6 +786,7 @@ def main():
     check("framing modes render true 1080x1920 from wide source", t_framing_modes_render)
     check("poster thumbnail generation", t_thumbnails_and_waveform_helpers)
     check("API: waveform / retry / delete endpoints", t_api_endpoints)
+    check("no long DB write locks during render (upload starvation)", t_no_long_write_locks_during_render)
     check("hook swap render (new hook + body, captions)", t_hook_swap_render)
     check("API: hook library upload/list/delete + validation", t_hooks_api)
     check("corrupt file detected cleanly", t_corrupt_file_fails_cleanly)

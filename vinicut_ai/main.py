@@ -136,6 +136,9 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+    except Exception:
+        # Abrupt client drops (browser closed, sleep, WinError 10054) are normal.
+        manager.disconnect(websocket)
 
 
 # ---------------------------------------------------------------------------
@@ -1923,6 +1926,8 @@ async def catch_all_ws(websocket: WebSocket, path: str):
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception:
         manager.disconnect(websocket)
 
 

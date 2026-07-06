@@ -500,6 +500,10 @@ def _render_final_cuts_impl(conn, project_id, filename, original_video_path, seg
                 INSERT INTO cuts (project_id, cut_type, start_time, end_time, filepath)
                 VALUES (?, ?, ?, ?, ?)
             """, (project_id, f"{dur}s_raw", 0.0, float(dur), cut_path_raw))
+            # Commit per write: an open transaction here would hold SQLite's
+            # write lock for the whole multi-minute render and starve uploads
+            # ("database is locked" 500s from the API).
+            conn.commit()
 
             # 2. Subtitled cut: burn the shifted captions onto the SHORT raw cut
             #    (replaces the old whole-source burn).
@@ -528,6 +532,7 @@ def _render_final_cuts_impl(conn, project_id, filename, original_video_path, seg
                 INSERT INTO cuts (project_id, cut_type, start_time, end_time, filepath)
                 VALUES (?, ?, ?, ?, ?)
             """, (project_id, f"{dur}s", 0.0, float(dur), cut_path))
+            conn.commit()
 
             # Poster thumbnails so the dashboard previews load instantly.
             render_engine.generate_thumbnail(cut_path_raw)
@@ -579,6 +584,7 @@ def _render_final_cuts_impl(conn, project_id, filename, original_video_path, seg
                 INSERT INTO cuts (project_id, cut_type, start_time, end_time, filepath)
                 VALUES (?, ?, ?, ?, ?)
             """, (project_id, "custom", 0.0, get_video_duration(custom_path), custom_path))
+            conn.commit()
             render_engine.generate_thumbnail(custom_path)
         except Exception as e:
             log.error("Error rendering custom reordered cut: %s", e)
@@ -609,6 +615,7 @@ def _render_final_cuts_impl(conn, project_id, filename, original_video_path, seg
                 INSERT INTO cuts (project_id, cut_type, start_time, end_time, filepath)
                 VALUES (?, ?, ?, ?, ?)
             """, (project_id, "custom_raw", 0.0, get_video_duration(custom_path_raw), custom_path_raw))
+            conn.commit()
             render_engine.generate_thumbnail(custom_path_raw)
 
             # Auto-copy custom raw cut
