@@ -633,7 +633,8 @@ const IC = {
   music:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>',
   gear:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
   wand:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4V2M15 16v-2M8 9h2M20 9h2M17.8 11.8L19 13M15 9h0M17.8 6.2L19 5M12.2 6.2L11 5M12.2 11.8L11 13"/><path d="M3 21l9-9"/></svg>',
-  clip:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/></svg>'
+  clip:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/></svg>',
+  swap:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 16V4"/><path d="M3 8l4-4 4 4"/><path d="M17 8v12"/><path d="M13 16l4 4 4-4"/></svg>'
 };
 
 /* ---------------- API ---------------- */
@@ -1006,6 +1007,7 @@ function drawDetail(p){
           <div class="inspector">
             <div class="rail">
               ${railBtn('deliver', IC.film, 'Deliverables')}
+              ${railBtn('hooks', IC.swap, 'Hook swap')}
               ${railBtn('copy', IC.clip, 'Marketing copy')}
               ${railBtn('style', IC.type, 'Style & framing')}
               ${railBtn('seq', IC.seq, 'Sequence order')}
@@ -1370,6 +1372,11 @@ function drawToolsSidebar() {
     `;
     setTimeout(drawOrder, 10);
   }
+  else if (activeToolTab === 'hooks') {
+    headerTitle = 'Hook swap';
+    contentHtml = `<div class="empty"><span class="spinner"></span></div>`;
+    setTimeout(() => drawHooksPanel(container, p), 10);
+  }
   else if (activeToolTab === 'copy') {
     headerTitle = 'Marketing copy';
     const mk = p.marketing;
@@ -1730,6 +1737,132 @@ async function loadFontsInto(current){
   let custom=[]; try{ custom=(await API.fonts()).map(f=>f.family_name); }catch(e){}
   const all=[...new Set([current||'Montserrat',...defaults,...custom])];
   sel.innerHTML=all.map(f=>`<option ${f===(current||'Montserrat')?'selected':''}>${esc(f)}</option>`).join('');
+}
+
+/* ---------------- hook swap panel ---------------- */
+let hookSel = new Set();
+
+async function drawHooksPanel(container, p){
+  const body = container.querySelector('.insp-body');
+  if (!body) return;
+  let hooks = [];
+  try { hooks = await API.req('/api/hooks'); } catch(e) {}
+  const processing = ['pending','queued','analyzing','rendering'].includes(cur ? cur.status : p.status);
+  const swaps = (cur && cur.hook_swaps) || p.hook_swaps || [];
+
+  // Prune selections for hooks that no longer exist.
+  const ids = new Set(hooks.map(h => h.id));
+  hookSel.forEach(id => { if (!ids.has(id)) hookSel.delete(id); });
+
+  const hookRows = hooks.map(h => `
+    <div class="order-row" style="align-items:flex-start;">
+      <input type="checkbox" style="margin-top:3px;" ${hookSel.has(h.id)?'checked':''}
+             onclick="toggleHookSel(${h.id}, this.checked)"/>
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:600;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(h.label)}</div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--text-faint);">
+          ${h.duration}s · ${h.has_transcript ? 'captions ready' : 'transcribing…'}
+        </div>
+        <video src="/hooks/${encodeURIComponent(h.filename)}" poster="/hooks/${encodeURIComponent(h.filename)}.jpg"
+               controls preload="none" style="width:100%;aspect-ratio:16/9;background:#000;border-radius:3px;margin-top:5px;"></video>
+      </div>
+      <button class="btn danger sm" title="Remove from library" onclick="doDeleteHook(${h.id})">×</button>
+    </div>`).join('');
+
+  const swapCards = swaps.map(s => {
+    const prevName = s.filename_subbed || s.filename_raw;
+    const prev = prevName ? ('/cuts/'+encodeURIComponent(prevName)) : null;
+    return `
+      <div class="deliv">
+        <div class="deliv-title"><span>Hook: ${esc(s.label||'')}</span></div>
+        ${prev ? `<video src="${prev}" poster="${prev}.jpg" controls preload="none"></video>` : ''}
+        <div class="deliv-actions">
+          ${s.filename_subbed ? `<button class="btn sm" onclick="dl('/api/projects/${p.id}/download-hookswap/${s.id}/true')">Subtitled</button>` : ''}
+          ${s.filename_raw ? `<button class="btn ghost sm" onclick="dl('/api/projects/${p.id}/download-hookswap/${s.id}/false')">Raw</button>` : ''}
+        </div>
+      </div>`;
+  }).join('');
+
+  body.innerHTML = `
+    <div class="note">
+      The AI already found where this video's original hook ends
+      (<b style="font-family:var(--mono);">${cur && cur.segments_map ? cur.segments_map.hook[1].toFixed(1) : '?'}s</b>).
+      Upload creator hooks below — each one becomes a full video: <b>new hook + this video's body</b>, with captions, framing and mastering applied.
+    </div>
+    <div class="field">
+      <label class="field-label">Add hook clips (.mp4/.mov/.avi/.mkv)</label>
+      <input type="file" id="hookFiles" accept=".mp4,.mov,.avi,.mkv" multiple/>
+    </div>
+    <div class="field">
+      <label class="field-label">Hook library ${hooks.length ? `(${hooks.length})` : ''}</label>
+      ${hookRows || '<div class="note">No hooks yet — upload the creators’ hook clips above.</div>'}
+    </div>
+    <button class="btn sm" id="swapBtn" onclick="runHookSwaps(this)" ${(!hooks.length || processing) ? 'disabled' : ''}>
+      Generate ${hookSel.size ? hookSel.size : 'all ' + hooks.length} hook video${(hookSel.size||hooks.length)===1?'':'s'}
+    </button>
+    ${processing ? '<div style="font-size:10.5px;color:var(--text-faint);">Available when the project finishes processing.</div>' : ''}
+    ${swapCards ? `<hr class="divider"/><div class="deliv-group">Hook swap deliverables</div>${swapCards}` : ''}
+  `;
+
+  const fu = $('#hookFiles');
+  if (fu) {
+    fu.onchange = async function() {
+      const files = [...this.files].filter(f=>/\.(mp4|mov|avi|mkv)$/i.test(f.name));
+      if (!files.length) return;
+      toast(`Uploading ${files.length} hook clip(s)…`);
+      let ok = 0;
+      for (const f of files) {
+        const fd = new FormData();
+        fd.append('file', f);
+        try { await API.req('/api/hooks', {method:'POST', body:fd}); ok++; }
+        catch(e) { toast(`'${f.name}' failed: ${e.message}`, 'err'); }
+      }
+      if (ok) toast(`${ok} hook(s) added to the library.`, 'ok');
+      this.value = '';
+      drawToolsSidebar();
+    };
+  }
+}
+
+function toggleHookSel(id, on){
+  on ? hookSel.add(id) : hookSel.delete(id);
+  const btn = $('#swapBtn');
+  if (btn) {
+    const total = document.querySelectorAll('#toolSidebarPanel .order-row input[type=checkbox]').length;
+    const n = hookSel.size || total;
+    btn.textContent = `Generate ${hookSel.size ? hookSel.size : 'all ' + total} hook video${n===1?'':'s'}`;
+  }
+}
+
+async function runHookSwaps(btn){
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Starting…';
+  try {
+    const payload = hookSel.size ? {hook_ids: [...hookSel]} : {};
+    const r = await API.req(`/api/projects/${cur.id}/hook-swap`, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
+    });
+    toast(`Rendering ${r.hooks} hook video(s) — they appear below when ready.`, 'ok');
+    cur.status = 'rendering';
+    stopPoll(); poll = setInterval(()=>refreshDetail(cur.id, false), 3500);
+    drawToolsSidebar();
+  } catch(e) {
+    toast('Hook swap failed to start: ' + e.message, 'err');
+    btn.disabled = false;
+    btn.textContent = 'Generate hook videos';
+  }
+}
+
+async function doDeleteHook(id){
+  if (!await uiConfirm('Remove hook', 'Remove this hook clip from the library? Already-rendered swap videos are kept.', 'Remove', true)) return;
+  try {
+    await API.req(`/api/hooks/${id}`, {method:'DELETE'});
+    hookSel.delete(id);
+    toast('Hook removed.', 'ok');
+    drawToolsSidebar();
+  } catch(e) {
+    toast('Remove failed: ' + e.message, 'err');
+  }
 }
 
 async function genMarketing(btn){

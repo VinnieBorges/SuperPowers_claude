@@ -56,7 +56,7 @@ def _ensure_columns(cursor, table, columns):
 
 def init_db():
     """Initializes the required directories and SQLite database tables."""
-    for directory in [RAW_DIR, CUTS_DIR, DB_DIR, WATCH_DIR, AUTO_CUTS_DIR, config.FONTS_DIR]:
+    for directory in [RAW_DIR, CUTS_DIR, DB_DIR, WATCH_DIR, AUTO_CUTS_DIR, config.FONTS_DIR, config.HOOKS_DIR]:
         os.makedirs(directory, exist_ok=True)
 
     conn = get_db_connection()
@@ -170,6 +170,35 @@ def init_db():
         # AI retention/virality estimate (0-100) for this variation's structure.
         "score": "INTEGER",
     })
+
+    # Library of replacement hook clips uploaded by creators. transcript_json
+    # is filled asynchronously by Whisper so swapped videos get full captions.
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS hooks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        filename TEXT NOT NULL,
+        label TEXT,
+        duration REAL DEFAULT 0,
+        transcript_json TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    # Rendered hook-swap deliverables: one row per (project, hook) render.
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS hook_swaps (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER,
+        hook_id INTEGER,
+        hook_label TEXT,
+        filepath_subbed TEXT,
+        filepath_raw TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (project_id) REFERENCES projects(id),
+        FOREIGN KEY (hook_id) REFERENCES hooks(id)
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_hookswaps_project ON hook_swaps(project_id)")
 
     # Indexes: the queue worker polls by status, and detail pages join by
     # project_id constantly.

@@ -5,6 +5,25 @@ AI-powered short-form video factory: drop raw UGC footage in, get retention-opti
 **Hook / Demo / CTA**, re-ordered into montage variations, and burned with karaoke-style
 captions. Now with a **Claude-powered editorial brain**.
 
+## What's new in v2.2 — Hook Swap
+
+Creators keep sending new hooks; the winning body stays the same. The Hook Swap
+tab (↑↓ icon in the editor) turns that into a factory:
+
+1. **The AI already cut the original hook** — its end boundary comes from the
+   editorial analysis (adjustable by dragging the timeline handle).
+2. **Upload creator hooks** into the reusable hook library. Each clip is
+   probed, thumbnailed, and transcribed in the background so swapped videos
+   keep full karaoke captions over the new hook too.
+3. **Generate** — one full video per hook: `new hook + this video's body`,
+   with per-clip framing (a phone-shot hook rides cleanly on a wide product
+   video), silence jump-cuts on the body, loudness mastering, and burned
+   captions. Subtitled + raw deliverables, one pair per hook, with per-hook
+   failure isolation.
+
+Endpoints: `POST/GET/DELETE /api/hooks`, `POST /api/projects/{id}/hook-swap`,
+`GET /api/projects/{id}/download-hookswap/{swap_id}/{subs}`.
+
 ## What's new in v2.1 — high-end cutter upgrade
 
 - **Framing engine (fixes wide-footage cropping)** — sources that aren't 9:16 are no

@@ -5,6 +5,7 @@ database/
 watch/
 auto_cuts/
 fonts/
+hooks/
 frontend/dist/
 
 # Environment / tooling

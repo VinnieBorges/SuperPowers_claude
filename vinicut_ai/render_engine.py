@@ -1505,3 +1505,105 @@ def _render_custom_reordered_cut_impl(video_path, segments_map, order, subtitle_
     if return_slices:
         return output_path, {"slices": slices, "use_xfade": use_xfade, "trans_d": trans_d}
     return output_path
+
+
+# ---------------------------------------------------------------------------
+# Hook swapping
+# ---------------------------------------------------------------------------
+
+def render_hook_swap(hook_path, base_path, body_start, raw_output, subbed_output=None,
+                     base_segments=None, hook_segments=None, style_preset="Bold Yellow",
+                     font_family="Montserrat", zoom_effect=1, framing="auto",
+                     total_dur=None, animation="none", fade_ms=0):
+    """
+    Replaces the base video's opening hook with a creator-supplied hook clip:
+
+        output = [hook clip, framed 9:16] + [base video from body_start onward]
+
+    Both inputs get their own framing resolution (a phone-shot hook can ride on
+    a wide product video), the body keeps silence jump-cuts, audio is mastered
+    like every other deliverable, and captions cover both parts: the hook's own
+    transcript followed by the base transcript shifted onto the new timeline.
+    The join is a hard cut — the standard look for hook-swap ad testing.
+
+    Returns {"raw": raw_output, "subbed": subbed_output or None}.
+    """
+    hook_path, hook_temp = ensure_audio_stream(hook_path)
+    base_path, base_temp = ensure_audio_stream(base_path)
+    try:
+        hook_dur = get_video_duration(hook_path)
+        if hook_dur <= 0:
+            raise RuntimeError(f"Replacement hook clip is unreadable: {os.path.basename(hook_path)}")
+        if total_dur is None:
+            total_dur = get_video_duration(base_path)
+        if total_dur <= 0:
+            raise RuntimeError(f"Base video is unreadable: {os.path.basename(base_path)}")
+        body_start = max(0.0, min(float(body_start), max(0.0, total_dur - 0.5)))
+
+        body_slices = [(body_start, total_dur, "demo")]
+        sil_enabled, sil_gap = silence_removal_settings()
+        if sil_enabled and base_segments:
+            body_slices = split_slices_on_silence(body_slices, base_segments, min_gap=sil_gap)
+
+        mode_hook = resolve_framing(framing, video_path=hook_path)
+        mode_base = resolve_framing(framing, video_path=base_path)
+        normalize = audio_normalize_enabled()
+
+        filter_parts = []
+        inputs = []
+        # Segment 0: the new hook (input 0), with the retention punch-in.
+        filter_parts.extend(framing_filter_parts(0, 0.0, hook_dur, mode_hook,
+                                                 zoom=(zoom_effect == 1), in_label="[0:v]"))
+        filter_parts.append(f"[0:a]atrim=start=0:end={hook_dur},asetpts=PTS-STARTPTS[a0]")
+        inputs.append("[v0][a0]")
+        # Segments 1..n: the base video's body (input 1).
+        for i, (s, e, _seg_type) in enumerate(body_slices, start=1):
+            filter_parts.extend(framing_filter_parts(i, s, e, mode_base, zoom=False, in_label="[1:v]"))
+            filter_parts.append(f"[1:a]atrim=start={s}:end={e},asetpts=PTS-STARTPTS[a{i}]")
+            inputs.append(f"[v{i}][a{i}]")
+
+        filter_parts.append("".join(inputs) + f"concat=n={len(inputs)}:v=1:a=1[v_concat][a_concat]")
+        a_label = append_loudnorm(filter_parts, "[a_concat]", normalize)
+
+        args = [
+            FFMPEG_BIN, "-i", hook_path, "-i", base_path,
+            "-filter_complex", "; ".join(filter_parts),
+            "-map", "[v_concat]", "-map", a_label,
+        ] + encode_args() + [raw_output]
+        run_command(args, desc="Hook swap concat")
+
+        result = {"raw": raw_output, "subbed": None}
+
+        if subbed_output:
+            captions = []
+            if hook_segments:
+                # Hook captions already live at t=0; clip them to the hook window.
+                captions.extend(shift_subtitles_for_slices(hook_segments, [(0.0, hook_dur, "hook")]))
+            body_caps = shift_subtitles_for_slices(base_segments or [], body_slices)
+            for seg in body_caps:
+                seg["start"] += hook_dur
+                seg["end"] += hook_dur
+                for w in seg.get("words") or []:
+                    w["start"] += hook_dur
+                    w["end"] += hook_dur
+            captions.extend(body_caps)
+
+            if captions:
+                ass_path = subbed_output + ".ass"
+                all_slices = [(0.0, hook_dur, "hook")] + body_slices
+                generate_ass_file(captions, style_preset, ass_path, font_family=font_family,
+                                  animation=animation, fade_ms=fade_ms,
+                                  slices=all_slices, use_xfade=False, trans_d=0.0)
+                render_subtitles(raw_output, ass_path, subbed_output)
+            else:
+                import shutil as _shutil
+                _shutil.copy2(raw_output, subbed_output)
+            result["subbed"] = subbed_output
+        return result
+    finally:
+        for path, is_temp in ((hook_path, hook_temp), (base_path, base_temp)):
+            if is_temp:
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass

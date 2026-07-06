@@ -166,18 +166,19 @@ def safe_media_filename(filename, allowed_exts=None):
     return base
 
 
-def allocate_raw_filename(filename):
+def allocate_raw_filename(filename, directory=None):
     """
-    Returns (filename, path) inside RAW_DIR that does not collide with an
-    existing file — repeated uploads of 'clip.mp4' become clip_1.mp4, clip_2...
-    instead of silently overwriting another project's source footage.
+    Returns (filename, path) inside `directory` (RAW_DIR by default) that does
+    not collide with an existing file — repeated uploads of 'clip.mp4' become
+    clip_1.mp4, clip_2... instead of silently overwriting existing footage.
     """
-    raw_path = os.path.join(database.RAW_DIR, filename)
+    directory = directory or database.RAW_DIR
+    raw_path = os.path.join(directory, filename)
     base_name, ext = os.path.splitext(filename)
     counter = 1
     while os.path.exists(raw_path):
         filename = f"{base_name}_{counter}{ext}"
-        raw_path = os.path.join(database.RAW_DIR, filename)
+        raw_path = os.path.join(directory, filename)
         counter += 1
     return filename, raw_path
 
@@ -831,6 +832,10 @@ class SettingsUpdateRequest(BaseModel):
     settings: dict
 
 
+class HookSwapRequest(BaseModel):
+    hook_ids: Optional[List[int]] = None  # None / empty = every hook in the library
+
+
 # ---------------------------------------------------------------------------
 # Upload / project endpoints
 # ---------------------------------------------------------------------------
@@ -901,6 +906,12 @@ def get_project_details(project_id: int):
         FROM ai_montages WHERE project_id = ?
     """, (project_id,))
     ai_rows = cursor.fetchall()
+
+    cursor.execute("""
+        SELECT id, hook_label, filepath_subbed, filepath_raw
+        FROM hook_swaps WHERE project_id = ? ORDER BY id
+    """, (project_id,))
+    swap_rows = cursor.fetchall()
     conn.close()
 
     cuts = {}
@@ -941,6 +952,15 @@ def get_project_details(project_id: int):
         "marketing": marketing,
         "cuts": cuts,
         "ai_montages": ai_montages,
+        "hook_swaps": [
+            {
+                "id": sid,
+                "label": label,
+                "filename_subbed": os.path.basename(sub) if sub else None,
+                "filename_raw": os.path.basename(raw) if raw else None,
+            }
+            for sid, label, sub, raw in swap_rows
+        ],
     }
 
 
@@ -1155,6 +1175,9 @@ def _project_artifact_paths(project_id, cursor):
     cursor.execute("SELECT filepath_subbed, filepath_raw FROM ai_montages WHERE project_id = ?", (project_id,))
     for sub, raw in cursor.fetchall():
         paths += [p for p in (sub, raw) if p]
+    cursor.execute("SELECT filepath_subbed, filepath_raw FROM hook_swaps WHERE project_id = ?", (project_id,))
+    for sub, raw in cursor.fetchall():
+        paths += [p for p in (sub, raw) if p]
     with_sidecars = []
     for p in paths:
         with_sidecars += [p, p + ".ass", p + ".jpg"]
@@ -1208,6 +1231,7 @@ def delete_project(project_id: int):
 
     cursor.execute("DELETE FROM cuts WHERE project_id = ?", (project_id,))
     cursor.execute("DELETE FROM ai_montages WHERE project_id = ?", (project_id,))
+    cursor.execute("DELETE FROM hook_swaps WHERE project_id = ?", (project_id,))
     cursor.execute("DELETE FROM subtitle_corrections WHERE project_id = ?", (project_id,))
     cursor.execute("DELETE FROM projects WHERE id = ?", (project_id,))
     conn.commit()
@@ -1441,6 +1465,239 @@ def download_bulk_zip(req: BulkDownloadRequest):
 
 
 # ---------------------------------------------------------------------------
+# Hook library + hook swapping
+# ---------------------------------------------------------------------------
+
+def _transcribe_hook_async(hook_id, path):
+    """Transcribes an uploaded hook clip in the background so swapped videos
+    can carry captions over the new hook too. Best effort — a hook without a
+    transcript still swaps fine (body captions only)."""
+    def work():
+        try:
+            segs = processor.run_audio_transcription(path)
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("UPDATE hooks SET transcript_json = ? WHERE id = ?",
+                           (json.dumps([dict(s) for s in segs]), hook_id))
+            conn.commit()
+            conn.close()
+            log.info("Hook %s transcribed (%d caption groups).", hook_id, len(segs))
+        except Exception as e:
+            log.warning("Hook %s transcription skipped: %s", hook_id, e)
+
+    threading.Thread(target=work, daemon=True, name=f"hook-transcribe-{hook_id}").start()
+
+
+@app.post("/api/hooks")
+async def upload_hook(file: UploadFile = File(...)):
+    """Adds a creator hook clip to the reusable hook library."""
+    filename = safe_media_filename(file.filename, config.VIDEO_EXTENSIONS)
+    filename, hook_path = allocate_raw_filename(filename, directory=config.HOOKS_DIR)
+    await save_upload_async(file, hook_path)
+
+    duration = render_engine.get_video_duration(hook_path)
+    if duration <= 0:
+        try:
+            os.remove(hook_path)
+        except OSError:
+            pass
+        raise HTTPException(status_code=400, detail=f"Could not read '{filename}' — corrupt file or unsupported codec.")
+
+    label = os.path.splitext(filename)[0]
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO hooks (filename, label, duration) VALUES (?, ?, ?)",
+                   (filename, label, duration))
+    hook_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+
+    render_engine.generate_thumbnail(hook_path)
+    _transcribe_hook_async(hook_id, hook_path)
+    return {"id": hook_id, "filename": filename, "label": label, "duration": round(duration, 2)}
+
+
+@app.get("/api/hooks")
+def list_hooks():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, filename, label, duration, transcript_json IS NOT NULL, created_at FROM hooks ORDER BY id DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {"id": r[0], "filename": r[1], "label": r[2], "duration": round(r[3] or 0, 2),
+         "has_transcript": bool(r[4]), "created_at": r[5]}
+        for r in rows
+    ]
+
+
+@app.delete("/api/hooks/{hook_id}")
+def delete_hook(hook_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT filename FROM hooks WHERE id = ?", (hook_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Hook not found")
+    cursor.execute("DELETE FROM hooks WHERE id = ?", (hook_id,))
+    conn.commit()
+    conn.close()
+    for suffix in ("", ".jpg", ".ass"):
+        try:
+            os.remove(os.path.join(config.HOOKS_DIR, row[0]) + suffix)
+        except OSError:
+            pass
+    return {"status": "deleted"}
+
+
+def bg_run_hook_swaps(project_id: int, hook_rows: list):
+    """Renders one deliverable per replacement hook: new hook + base video body."""
+    try:
+        render_engine.set_current_project(project_id)
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT filename, segments_map_json, transcript_json, font_family, zoom_effect, framing
+            FROM projects WHERE id = ?
+        """, (project_id,))
+        p = cursor.fetchone()
+        conn.close()
+        if not p:
+            return
+
+        filename, smap_json, transcript_json, font_family, zoom_effect, framing = p
+        video_path = os.path.join(database.RAW_DIR, filename)
+        segments_map = json.loads(smap_json)
+        base_segments = json.loads(transcript_json) if transcript_json else []
+        body_start = float(segments_map["hook"][1])
+        resolved_preset = resolve_style_preset(project_id)
+        animation, fade_ms = processor.get_subtitle_animation_settings()
+        total_dur = processor.get_video_duration(video_path)
+
+        set_project_status(project_id, "rendering", progress=0)
+        progress = make_progress_reporter(project_id, 0.0, 99.0)
+
+        done, failed = 0, 0
+        for idx, hook in enumerate(hook_rows):
+            if is_project_stopped(project_id):
+                raise RuntimeError("Hook swapping was stopped by the user.")
+            hook_id, hook_filename, hook_label, hook_transcript_json = hook
+            hook_path = os.path.join(config.HOOKS_DIR, hook_filename)
+            slug = re.sub(r"[^A-Za-z0-9_-]+", "_", hook_label or f"hook_{hook_id}").strip("_") or f"hook_{hook_id}"
+            raw_out = os.path.join(database.CUTS_DIR, f"project_{project_id}_hookswap_{hook_id}_{slug}_raw.mp4")
+            sub_out = os.path.join(database.CUTS_DIR, f"project_{project_id}_hookswap_{hook_id}_{slug}.mp4")
+            try:
+                hook_segments = json.loads(hook_transcript_json) if hook_transcript_json else []
+                render_engine.render_hook_swap(
+                    hook_path, video_path, body_start, raw_out, subbed_output=sub_out,
+                    base_segments=base_segments, hook_segments=hook_segments,
+                    style_preset=resolved_preset, font_family=font_family or "Montserrat",
+                    zoom_effect=int(zoom_effect) if zoom_effect is not None else 1,
+                    framing=framing or "auto", total_dur=total_dur,
+                    animation=animation, fade_ms=fade_ms,
+                )
+                for outp in (raw_out, sub_out):
+                    render_engine.generate_thumbnail(outp)
+
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                # Re-running a hook replaces its previous swap for this project.
+                cursor.execute("DELETE FROM hook_swaps WHERE project_id = ? AND hook_id = ?", (project_id, hook_id))
+                cursor.execute("""
+                    INSERT INTO hook_swaps (project_id, hook_id, hook_label, filepath_subbed, filepath_raw)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (project_id, hook_id, hook_label, sub_out, raw_out))
+                conn.commit()
+                conn.close()
+                done += 1
+            except Exception as swap_err:
+                failed += 1
+                log.error("Hook swap '%s' failed for project %s: %s", hook_label, project_id, swap_err)
+            progress(((idx + 1) / max(1, len(hook_rows))) * 100.0)
+
+        if done == 0 and failed > 0:
+            set_project_status(project_id, "failed",
+                               error=f"All {failed} hook swaps failed — check the hook clips and FFmpeg log.")
+        else:
+            set_project_status(project_id, "completed", progress=100)
+            log.info("Project %s: %d hook swap(s) rendered, %d failed.", project_id, done, failed)
+    except Exception as e:
+        log.error("Hook swap batch failed for project %s: %s", project_id, e)
+        try:
+            set_project_status(project_id, "failed", error=str(e))
+        except Exception:
+            pass
+    finally:
+        render_engine.set_current_project(None)
+
+
+@app.post("/api/projects/{project_id}/hook-swap")
+def trigger_hook_swap(project_id: int, req: HookSwapRequest, background_tasks: BackgroundTasks):
+    """Queues one render per selected hook: [new hook] + [this video's body]."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT status, segments_map_json, filename FROM projects WHERE id = ?", (project_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Project not found")
+    status, smap_json, filename = row
+    if status in ("pending", "queued", "analyzing", "rendering"):
+        conn.close()
+        raise HTTPException(status_code=400, detail="Project is still processing — wait for it to finish first.")
+    if not smap_json:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Project has no AI analysis yet (no hook boundary to swap at).")
+    if not os.path.exists(os.path.join(database.RAW_DIR, filename)):
+        conn.close()
+        raise HTTPException(status_code=400, detail="Source video is no longer on disk (cleaned up or deleted).")
+
+    if req.hook_ids:
+        placeholders = ",".join("?" for _ in req.hook_ids)
+        cursor.execute(f"SELECT id, filename, label, transcript_json FROM hooks WHERE id IN ({placeholders}) ORDER BY id", req.hook_ids)
+    else:
+        cursor.execute("SELECT id, filename, label, transcript_json FROM hooks ORDER BY id")
+    hook_rows = cursor.fetchall()
+
+    if not hook_rows:
+        conn.close()
+        raise HTTPException(status_code=400, detail="No hooks in the library — upload hook clips first.")
+
+    missing = [r[1] for r in hook_rows if not os.path.exists(os.path.join(config.HOOKS_DIR, r[1]))]
+    if missing:
+        conn.close()
+        raise HTTPException(status_code=400, detail=f"Hook files missing on disk: {', '.join(missing)}")
+
+    # Mark rendering synchronously so status polls never race the background task.
+    cursor.execute("""
+        UPDATE projects SET status = 'rendering', progress = 0, stop_requested = 0, error_message = NULL
+        WHERE id = ?
+    """, (project_id,))
+    conn.commit()
+    conn.close()
+
+    background_tasks.add_task(bg_run_hook_swaps, project_id, hook_rows)
+    return {"status": "rendering", "hooks": len(hook_rows)}
+
+
+@app.get("/api/projects/{project_id}/download-hookswap/{swap_id}/{with_subs}")
+def download_hook_swap(project_id: int, swap_id: int, with_subs: str):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT filepath_subbed, filepath_raw FROM hook_swaps WHERE id = ? AND project_id = ?",
+                   (swap_id, project_id))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Hook swap not found")
+    filepath = row[0] if with_subs.lower() == "true" else row[1]
+    if not filepath or not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="Rendered file not found")
+    return FileResponse(filepath, media_type="video/mp4", filename=os.path.basename(filepath))
+
+
+# ---------------------------------------------------------------------------
 # Fonts / music
 # ---------------------------------------------------------------------------
 
@@ -1620,6 +1877,7 @@ async def catch_all_ws(websocket: WebSocket, path: str):
 # Mount media bins to serve previews directly in HTML5 videos.
 app.mount("/raw", StaticFiles(directory=database.RAW_DIR), name="raw")
 app.mount("/cuts", StaticFiles(directory=database.CUTS_DIR), name="cuts")
+app.mount("/hooks", StaticFiles(directory=config.HOOKS_DIR), name="hooks")
 
 # Serve the web UI. Prefer the zero-build single-page UI in ./webui; fall back
 # to a built React app in ./frontend/dist if present.

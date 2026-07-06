@@ -63,6 +63,8 @@ DB_PATH = env("VINICUT_DB_PATH", os.path.join(DB_DIR, "eibeleza.db"))
 WATCH_DIR = env("VINICUT_WATCH_DIR", os.path.join(BASE_DIR, "watch"))
 AUTO_CUTS_DIR = env("VINICUT_AUTO_CUTS_DIR", os.path.join(BASE_DIR, "auto_cuts"))
 FONTS_DIR = env("VINICUT_FONTS_DIR", os.path.join(BASE_DIR, "fonts"))
+# Library of replacement hook clips uploaded by creators (hook-swap feature).
+HOOKS_DIR = env("VINICUT_HOOKS_DIR", os.path.join(BASE_DIR, "hooks"))
 
 # ---------------------------------------------------------------------------
 # Server

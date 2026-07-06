@@ -36,6 +36,7 @@ for var, sub in [
     ("VINICUT_RAW_DIR", "raw"), ("VINICUT_CUTS_DIR", "cuts"),
     ("VINICUT_DB_DIR", "db"), ("VINICUT_WATCH_DIR", "watch"),
     ("VINICUT_AUTO_CUTS_DIR", "auto_cuts"), ("VINICUT_FONTS_DIR", "fonts"),
+    ("VINICUT_HOOKS_DIR", "hooks"),
 ]:
     os.environ[var] = os.path.join(WORK, sub)
 os.environ["VINICUT_DB_PATH"] = os.path.join(WORK, "db", "selftest.db")
@@ -498,6 +499,75 @@ def t_api_endpoints():
         client.delete(f"/api/projects/{meta_id}")
 
 
+def t_hook_swap_render():
+    """New hook clip + base body: duration ≈ hook + body, true 1080x1920, subs burn."""
+    require_ffmpeg()
+    base = FIXTURES["landscape"]          # 12s wide source
+    hook_clip = FIXTURES["tiny"]          # 2s replacement hook
+    total = render_engine.get_video_duration(base)
+    body_start = 4.0                      # pretend the AI found the hook ends at 4s
+    base_transcript = fake_transcript(total)
+    hook_transcript = fake_transcript(2.0, "novo gancho do criador")
+
+    raw_out = os.path.join(database.CUTS_DIR, "swap_raw.mp4")
+    sub_out = os.path.join(database.CUTS_DIR, "swap_subbed.mp4")
+    result = render_engine.render_hook_swap(
+        hook_clip, base, body_start, raw_out, subbed_output=sub_out,
+        base_segments=base_transcript, hook_segments=hook_transcript,
+        framing="auto", total_dur=total,
+    )
+    d_raw = assert_playable(result["raw"])
+    d_sub = assert_playable(result["subbed"])
+    hook_dur = render_engine.get_video_duration(hook_clip)
+    # Silence removal may tighten the body, but the swap must contain the hook
+    # plus a meaningful body and never exceed hook + full body.
+    assert hook_dur + 2.0 <= d_raw <= hook_dur + (total - body_start) + 1.0, d_raw
+    assert abs(d_sub - d_raw) < 1.5
+    w, h = render_engine.get_video_dimensions(result["raw"])
+    assert (w, h) == (1080, 1920)
+
+
+def t_hooks_api():
+    """Hook library upload/list/delete + swap trigger validation via the app."""
+    try:
+        from fastapi.testclient import TestClient
+        import main as app_main
+    except Exception as e:
+        raise SkipTest(f"fastapi TestClient unavailable: {e}")
+    require_ffmpeg()
+    import config as cfg
+
+    with TestClient(app_main.app) as client:
+        with open(FIXTURES["tiny"], "rb") as f:
+            r = client.post("/api/hooks", files={"file": ("gancho_criadora_ana.mp4", f, "video/mp4")})
+        assert r.status_code == 200, r.text
+        hook = r.json()
+        assert 1.5 < hook["duration"] < 3.0 and hook["label"] == "gancho_criadora_ana"
+        assert os.path.exists(os.path.join(cfg.HOOKS_DIR, hook["filename"]))
+
+        listed = client.get("/api/hooks").json()
+        assert any(h["id"] == hook["id"] for h in listed)
+
+        # Garbage upload is rejected and leaves no file behind.
+        r = client.post("/api/hooks", files={"file": ("fake.mp4", b"not a video", "video/mp4")})
+        assert r.status_code == 400, r.text
+
+        # Swap trigger validates project state.
+        conn = database.get_db_connection()
+        cur = conn.cursor()
+        cur.execute("INSERT INTO projects (filename, status) VALUES ('no_analysis.mp4', 'completed')")
+        bare_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+        r = client.post(f"/api/projects/{bare_id}/hook-swap", json={})
+        assert r.status_code == 400 and "analysis" in r.json()["detail"].lower(), r.text
+        client.delete(f"/api/projects/{bare_id}")
+
+        r = client.delete(f"/api/hooks/{hook['id']}")
+        assert r.status_code == 200
+        assert not os.path.exists(os.path.join(cfg.HOOKS_DIR, hook["filename"]))
+
+
 def t_corrupt_file_fails_cleanly():
     require_ffmpeg()
     bad = os.path.join(database.RAW_DIR, "corrupt.mp4")
@@ -548,6 +618,8 @@ def main():
     check("framing modes render true 1080x1920 from wide source", t_framing_modes_render)
     check("poster thumbnail generation", t_thumbnails_and_waveform_helpers)
     check("API: waveform / retry / delete endpoints", t_api_endpoints)
+    check("hook swap render (new hook + body, captions)", t_hook_swap_render)
+    check("API: hook library upload/list/delete + validation", t_hooks_api)
     check("corrupt file detected cleanly", t_corrupt_file_fails_cleanly)
 
     print("\n====================")
