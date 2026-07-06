@@ -11,7 +11,8 @@ REM 1. Verify Python
 REM ---------------------------------------------------------------
 where python >nul 2>nul
 if errorlevel 1 (
-    echo [ERROR] Python was not found on PATH. Install Python 3.10+ from python.org first.
+    echo [ERROR] Python was not found. Run install.bat first - it sets up everything
+    echo         ^(Python, FFmpeg, Ollama, AI models^) automatically.
     pause
     exit /b 1
 )
@@ -46,8 +47,8 @@ where ffmpeg >nul 2>nul
 if errorlevel 1 (
     echo.
     echo [WARNING] FFmpeg was not found on PATH. Rendering will fail without it.
-    echo           Install it with:  winget install Gyan.FFmpeg
-    echo           Then close this window and run run.bat again.
+    echo           Run install.bat once - it installs FFmpeg, Ollama and the AI
+    echo           models automatically. ^(Or: winget install Gyan.FFmpeg^)
     echo.
 )
 

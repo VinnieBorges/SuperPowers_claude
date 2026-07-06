@@ -123,17 +123,20 @@ workspace and never touch your real database or media.
 
 ## Quick start (Windows)
 
-1. **Launch** — double-click `run.bat`. First run creates the virtualenv,
-   installs dependencies, creates `.env` from the template, and opens the app
-   at `http://127.0.0.1:8000`.
-2. **Enable Claude** *(optional)* — edit `.env` and paste your
-   `ANTHROPIC_API_KEY` (from console.anthropic.com), then restart. Without a
-   key the app runs fully local via Ollama.
-3. **Verify** — `run.bat test` runs the 16-check self-test suite.
+1. **Install once** — double-click **`install.bat`**. It installs Python,
+   FFmpeg and Ollama (via winget), the Python dependencies, GPU transcription
+   acceleration when an NVIDIA card is present, pulls the local AI model
+   (`gemma4:12b`, ~8 GB) and pre-downloads the Whisper model (~3 GB), and
+   creates your `.env`.
+2. **Enable Claude** *(optional, recommended)* — edit `.env` and paste your
+   `ANTHROPIC_API_KEY` (from console.anthropic.com). Without a key the app
+   runs fully local via Ollama.
+3. **Daily use** — double-click `run.bat`; it opens
+   `http://127.0.0.1:8000`. **Verify** anytime with `run.bat test`
+   (self-test suite).
 
-FFmpeg + FFprobe must be on PATH (`winget install Gyan.FFmpeg`), or set
-`VINICUT_FFMPEG` / `VINICUT_FFPROBE`. Linux/macOS: `pip install -r
-requirements.txt && python main.py`.
+Linux/macOS: install FFmpeg + Ollama yourself, then
+`pip install -r requirements.txt && python main.py`.
 
 ## How the pipeline works
 
