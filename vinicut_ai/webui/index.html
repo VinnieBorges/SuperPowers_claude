@@ -1494,7 +1494,11 @@ function drawToolsSidebar() {
           </div>
           <div class="field">
             <label class="field-label">Local model (Ollama)</label>
-            <input type="text" id="se_edit" value="${esc(s.edit_model||'')}"/>
+            <span id="se_edit_slot"><input type="text" id="se_edit" value="${esc(s.edit_model||'')}"/></span>
+            <div style="font-size:10.5px;color:var(--text-faint);" id="se_edit_hint">
+              Smaller models answer much faster — a 12B is the best speed/quality balance.
+              Install more with <span style="font-family:var(--mono);">ollama pull gemma4:12b</span>, then reopen this panel.
+            </div>
           </div>
           <button class="btn ghost sm" onclick="testLLM(this)" style="align-self:flex-start;">Test AI connection</button>
           <div id="llmTestResult" style="font-size:10.5px;font-family:var(--mono);color:var(--text-dim);"></div>
@@ -1536,6 +1540,25 @@ function drawToolsSidebar() {
             </div>
           </div>
         `;
+
+        // Upgrade the local-model input into a picker listing the models
+        // actually installed in Ollama (kept as free text when unreachable).
+        try {
+          const om = await API.req('/api/llm/ollama-models');
+          if (om.models && om.models.length) {
+            const current = s.edit_model || '';
+            const opts = om.models.map(m =>
+              `<option value="${esc(m.name)}" ${m.name === current ? 'selected' : ''}>${esc(m.name)}${m.size_gb ? ` — ${m.size_gb} GB` : ''}</option>`);
+            if (current && !om.models.some(m => m.name === current)) {
+              opts.unshift(`<option value="${esc(current)}" selected>${esc(current)} (not installed)</option>`);
+            }
+            const slot = $('#se_edit_slot');
+            if (slot) slot.innerHTML = `<select id="se_edit">${opts.join('')}</select>`;
+          } else {
+            const hint = $('#se_edit_hint');
+            if (hint) hint.innerHTML = 'Ollama not reachable — start it (or use Claude) and reopen this panel to pick from installed models.';
+          }
+        } catch(e) {}
       } catch (e) {
         const body = container.querySelector('.insp-body');
         if (body) body.innerHTML = `<div style="color:var(--err);font-size:12px;">Failed to load settings.</div>`;
@@ -1998,7 +2021,11 @@ async function testLLM(btn){
       if (out) out.innerHTML = `<span style="color:var(--ok);">OK — ${esc(r.provider)} / ${esc(r.model||'')} replied "${esc(r.reply||'')}"</span>`;
       toast(`AI connection OK via ${r.provider}.`, 'ok');
     } else {
-      if (out) out.innerHTML = `<span style="color:var(--err);">${esc(r.provider)}: ${esc(r.error||'unknown error')}</span>`;
+      let errMsg = r.error || 'unknown error';
+      if (r.provider === 'ollama' && errMsg.toLowerCase().includes('timed out')) {
+        errMsg += ' — this model is too slow for this machine; pick a smaller one above (12B recommended).';
+      }
+      if (out) out.innerHTML = `<span style="color:var(--err);">${esc(r.provider)}: ${esc(errMsg)}</span>`;
       toast('AI connection failed.', 'err');
     }
     loadAIEngineBadge();

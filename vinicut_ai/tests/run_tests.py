@@ -240,6 +240,53 @@ def t_loudnorm_append():
     assert render_engine.append_loudnorm(parts, "[a_concat]", False) == "[a_concat]" and not parts
 
 
+def t_ollama_model_listing_and_timeout_hint():
+    from unittest import mock
+    import config as cfg
+
+    class FakeResp:
+        def raise_for_status(self): pass
+        def json(self):
+            return {"models": [
+                {"name": "gemma4:26b", "size": 26_000_000_000},
+                {"name": "gemma4:12b", "size": 12_000_000_000},
+                {"name": "weird-no-size"},
+            ]}
+
+    with mock.patch.object(llm.requests, "get", return_value=FakeResp()):
+        models = llm.list_ollama_models()
+    # Sorted smallest first so the fast options lead the picker.
+    assert [m["name"] for m in models[:2]] == ["gemma4:12b", "gemma4:26b"], models
+    assert models[0]["size_gb"] == 12.0
+
+    with mock.patch.object(llm.requests, "get", side_effect=OSError("down")):
+        assert llm.list_ollama_models() == []
+
+    # Ollama read-timeouts must surface the "pick a smaller model" hint.
+    with mock.patch.object(llm.requests, "post", side_effect=OSError("Read timed out. (read timeout=300)")), \
+         mock.patch.object(cfg, "LLM_MAX_RETRIES", 0), \
+         mock.patch.object(llm.time, "sleep"):
+        try:
+            llm.chat("oi", provider="ollama")
+            raise AssertionError("should have raised")
+        except llm.LLMError as e:
+            assert "smaller Ollama model" in str(e), e
+
+    # Ollama chat payload carries keep_alive + num_ctx.
+    captured = {}
+    class FakeChat:
+        def raise_for_status(self): pass
+        def json(self): return {"message": {"content": "ok"}}
+    def fake_post(url, json=None, timeout=None):
+        captured.update(payload=json, timeout=timeout)
+        return FakeChat()
+    with mock.patch.object(llm.requests, "post", side_effect=fake_post):
+        llm.chat("oi", provider="ollama", model="gemma4:12b")
+    assert captured["payload"]["keep_alive"] == cfg.OLLAMA_KEEP_ALIVE
+    assert captured["payload"]["options"]["num_ctx"] == cfg.OLLAMA_NUM_CTX
+    assert captured["timeout"] == cfg.LLM_TIMEOUT_SECONDS >= 300
+
+
 def t_hook_score_sanitizer():
     assert ai_editor._sanitize_hook_score({"score": 87, "reason": "Ótimo gancho, gera curiosidade."}) == \
         {"score": 87, "reason": "Ótimo gancho, gera curiosidade."}
@@ -622,6 +669,7 @@ def main():
     check("framing mode resolution (auto/crop/fit)", t_framing_resolution)
     check("silence jump-cut slice splitting", t_silence_split_logic)
     check("loudnorm audio chain append", t_loudnorm_append)
+    check("ollama model listing + timeout hint + keep_alive", t_ollama_model_listing_and_timeout_hint)
     check("hook score sanitizer + PT reason passthrough", t_hook_score_sanitizer)
     check("settings + provider fallback logic", t_db_settings_roundtrip)
 

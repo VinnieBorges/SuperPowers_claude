@@ -109,12 +109,38 @@ def _chat_ollama(prompt, system, temperature, model):
             "model": model,
             "messages": messages,
             "stream": False,
-            "options": {"temperature": temperature},
+            # Keep the model resident between the pipeline's back-to-back calls
+            # (segmentation -> marketing pack -> hook scores) so only the first
+            # call pays the VRAM load cost.
+            "keep_alive": config.OLLAMA_KEEP_ALIVE,
+            "options": {"temperature": temperature, "num_ctx": config.OLLAMA_NUM_CTX},
         },
         timeout=config.LLM_TIMEOUT_SECONDS,
     )
     resp.raise_for_status()
     return resp.json()["message"]["content"]
+
+
+def list_ollama_models():
+    """
+    Returns the models actually installed in the local Ollama
+    ([{name, size_gb}], sorted smallest first) or [] when unreachable.
+    """
+    try:
+        resp = requests.get(f"{config.OLLAMA_HOST}/api/tags", timeout=4)
+        resp.raise_for_status()
+        models = []
+        for m in resp.json().get("models", []) or []:
+            name = m.get("name") or m.get("model")
+            if not name:
+                continue
+            size = m.get("size") or 0
+            models.append({"name": name, "size_gb": round(size / 1e9, 1) if size else None})
+        models.sort(key=lambda x: (x["size_gb"] is None, x["size_gb"] or 0, x["name"]))
+        return models
+    except Exception as e:
+        log.debug("Could not list Ollama models: %s", e)
+        return []
 
 
 def _chat_anthropic(prompt, system, temperature, model):
@@ -190,7 +216,15 @@ def chat(prompt, system=None, temperature=0.2, model=None, provider=None):
             log.warning("LLM call failed via %s (attempt %d): %s. Retrying in %ss...",
                         provider, attempt + 1, e, wait)
             time.sleep(wait)
-    raise LLMError(f"LLM chat failed via {provider}: {last_err}")
+
+    msg = f"LLM chat failed via {provider}: {last_err}"
+    if provider == "ollama" and "timed out" in str(last_err).lower():
+        msg += (
+            " — the local model looks too heavy/slow for this machine. "
+            "In Settings > System pick a smaller Ollama model (a 12B is a good "
+            "speed/quality balance), or raise VINICUT_LLM_TIMEOUT in .env."
+        )
+    raise LLMError(msg)
 
 
 def strip_code_fences(text):

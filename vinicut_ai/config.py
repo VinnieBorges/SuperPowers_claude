@@ -104,8 +104,16 @@ WORKERS = max(1, min(4, env_int("VINICUT_WORKERS", 1)))
 # these are the boot defaults.
 LLM_PROVIDER_DEFAULT = env("VINICUT_LLM_PROVIDER", "auto")
 OLLAMA_HOST = env("OLLAMA_HOST", "http://localhost:11434")
-OLLAMA_EDIT_MODEL = env("VINICUT_OLLAMA_EDIT_MODEL", "gemma4:26b")
+# 12B is the sweet spot for this pipeline: big models (26B+) routinely blow
+# past HTTP timeouts on consumer GPUs while loading/offloading.
+OLLAMA_EDIT_MODEL = env("VINICUT_OLLAMA_EDIT_MODEL", "gemma4:12b")
 OLLAMA_VISION_MODEL = env("VINICUT_OLLAMA_VISION_MODEL", "llama3.2-vision:latest")
+# Keep the model resident in VRAM between pipeline calls (segmentation,
+# scoring, copy pack all hit it back-to-back) instead of reloading each time.
+OLLAMA_KEEP_ALIVE = env("VINICUT_OLLAMA_KEEP_ALIVE", "15m")
+# Transcript prompts are long; the Ollama default context (often 4k) would
+# silently truncate them.
+OLLAMA_NUM_CTX = env_int("VINICUT_OLLAMA_NUM_CTX", 8192)
 
 ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY")
 ANTHROPIC_MODEL = env("VINICUT_ANTHROPIC_MODEL", "claude-sonnet-5")
@@ -115,7 +123,9 @@ OPENAI_API_KEY = env("OPENAI_API_KEY")
 OPENAI_BASE_URL = env("OPENAI_BASE_URL", "https://api.openai.com/v1")
 OPENAI_MODEL = env("VINICUT_OPENAI_MODEL", "gpt-4o-mini")
 
-LLM_TIMEOUT_SECONDS = env_int("VINICUT_LLM_TIMEOUT", 120)
+# Local models can take minutes on first call while loading into VRAM; 120s
+# proved too tight in the field (read timeouts against gemma 26B).
+LLM_TIMEOUT_SECONDS = env_int("VINICUT_LLM_TIMEOUT", 300)
 LLM_MAX_RETRIES = env_int("VINICUT_LLM_RETRIES", 2)
 
 WHISPER_MODEL_DEFAULT = env("VINICUT_WHISPER_MODEL", "large-v3")

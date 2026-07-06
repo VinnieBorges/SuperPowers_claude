@@ -1096,6 +1096,12 @@ def llm_status():
     return llm.provider_status()
 
 
+@app.get("/api/llm/ollama-models")
+def ollama_models():
+    """Models actually installed in the local Ollama, for the settings picker."""
+    return {"host": config.OLLAMA_HOST, "models": llm.list_ollama_models()}
+
+
 @app.post("/api/llm/test")
 def llm_test(provider: Optional[str] = None):
     """Round-trips a tiny prompt through the selected provider to verify it works."""
