@@ -240,6 +240,24 @@ def t_loudnorm_append():
     assert render_engine.append_loudnorm(parts, "[a_concat]", False) == "[a_concat]" and not parts
 
 
+def t_hook_score_sanitizer():
+    assert ai_editor._sanitize_hook_score({"score": 87, "reason": "Ótimo gancho, gera curiosidade."}) == \
+        {"score": 87, "reason": "Ótimo gancho, gera curiosidade."}
+    assert ai_editor._sanitize_hook_score({"score": 250, "reason": "x"})["score"] == 100
+    assert ai_editor._sanitize_hook_score({"score": -5, "reason": "x"})["score"] == 0
+    assert ai_editor._sanitize_hook_score({"score": "not-a-number"}) is None
+    assert ai_editor._sanitize_hook_score("garbage") is None
+    # Full path with a mocked model reply (Portuguese reason preserved).
+    from unittest import mock
+    with mock.patch.object(ai_editor.llm, "chat_json",
+                           return_value={"score": 74, "reason": "Bom padrão de interrupção."}):
+        out = ai_editor.score_hook([{"text": "para de gastar dinheiro com shampoo caro"}])
+        assert out == {"score": 74, "reason": "Bom padrão de interrupção."}
+    with mock.patch.object(ai_editor.llm, "chat_json", side_effect=RuntimeError("offline")):
+        assert ai_editor.score_hook([{"text": "oi gente"}]) is None
+    assert ai_editor.score_hook([]) is None
+
+
 def t_db_settings_roundtrip():
     database.update_setting("llm_provider", "anthropic")
     assert database.get_setting("llm_provider") == "anthropic"
@@ -547,6 +565,12 @@ def t_hooks_api():
 
         listed = client.get("/api/hooks").json()
         assert any(h["id"] == hook["id"] for h in listed)
+        assert all("score" in h and "score_reason" in h for h in listed)
+
+        # Scoring a hook that has no transcript yet is a clean 400 (or the
+        # background whisper finished, in which case 502 without an LLM here).
+        r = client.post(f"/api/hooks/{hook['id']}/score")
+        assert r.status_code in (400, 502), r.text
 
         # Garbage upload is rejected and leaves no file behind.
         r = client.post("/api/hooks", files={"file": ("fake.mp4", b"not a video", "video/mp4")})
@@ -598,6 +622,7 @@ def main():
     check("framing mode resolution (auto/crop/fit)", t_framing_resolution)
     check("silence jump-cut slice splitting", t_silence_split_logic)
     check("loudnorm audio chain append", t_loudnorm_append)
+    check("hook score sanitizer + PT reason passthrough", t_hook_score_sanitizer)
     check("settings + provider fallback logic", t_db_settings_roundtrip)
 
     print("\n[2/2] Render tests (real FFmpeg pipeline)")

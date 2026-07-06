@@ -183,6 +183,12 @@ def init_db():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
+    _ensure_columns(cursor, "hooks", {
+        # AI scroll-stopping estimate (0-100) + a short critique in the
+        # hook's own language, filled after transcription.
+        "score": "INTEGER",
+        "score_reason": "TEXT",
+    })
 
     # Rendered hook-swap deliverables: one row per (project, hook) render.
     cursor.execute("""
@@ -224,15 +230,17 @@ def init_db():
         ("silence_removal", "1"),
         ("silence_min_gap", "0.45"),
         ("audio_normalize", "1"),
-        ("whisper_language", "auto"),
+        # All UGC footage for this brand is Portuguese; forcing the language
+        # beats auto-detect on noisy audio. Editable in Settings.
+        ("whisper_language", "pt"),
     ]
     for key, val in default_settings:
         cursor.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)", (key, val))
 
     cursor.execute("INSERT OR IGNORE INTO system_prompts (component, prompt_text) VALUES (?, ?)", (
         "whisper",
-        "Transcribe the audio accurately. Focus on punctuation, capitalization, and correct "
-        "spelling of technical terms or brand names like Hidratei."
+        "Transcreva o áudio em português com precisão. Atenção à pontuação, capitalização e "
+        "grafia correta de termos técnicos e nomes de marca como Hidratei."
     ))
 
     cursor.execute("INSERT OR IGNORE INTO system_prompts (component, prompt_text) VALUES (?, ?)", (

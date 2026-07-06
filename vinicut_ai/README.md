@@ -5,6 +5,18 @@ AI-powered short-form video factory: drop raw UGC footage in, get retention-opti
 **Hook / Demo / CTA**, re-ordered into montage variations, and burned with karaoke-style
 captions. Now with a **Claude-powered editorial brain**.
 
+## What's new in v2.3 — AI hook ranking + Portuguese-first
+
+- **Hooks are ranked before you render.** Right after a creator hook is
+  transcribed, the AI scores its scroll-stopping power (0-100) with a short
+  critique — pattern interrupt, curiosity gap, specificity, clarity in the
+  first second. The library sorts best-first, so you always test the
+  strongest hooks first. Unscored hooks get a one-click "score" action.
+- **Portuguese-first defaults.** Transcription is forced to `pt` out of the
+  box (editable in Settings), the Whisper priming prompt is written in
+  Portuguese, and every AI output — hook critiques, variation names and
+  rationales, marketing copy — is generated in the video's own language.
+
 ## What's new in v2.2 — Hook Swap
 
 Creators keep sending new hooks; the winning body stays the same. The Hook Swap

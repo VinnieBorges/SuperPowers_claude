@@ -1754,20 +1754,33 @@ async function drawHooksPanel(container, p){
   const ids = new Set(hooks.map(h => h.id));
   hookSel.forEach(id => { if (!ids.has(id)) hookSel.delete(id); });
 
-  const hookRows = hooks.map(h => `
+  const hookRows = hooks.map(h => {
+    const hasScore = h.score !== null && h.score !== undefined;
+    const scoreColor = hasScore ? (h.score >= 75 ? 'var(--ok)' : (h.score >= 50 ? 'var(--accent-h)' : 'var(--err)')) : 'var(--text-faint)';
+    const scoreBadge = hasScore
+      ? `<span title="${esc(h.score_reason || 'AI scroll-stopping estimate')}" style="font-family:var(--mono);font-size:11px;font-weight:700;color:${scoreColor};border:1px solid var(--line-2);border-radius:3px;padding:1px 7px;flex:0 0 auto;">${h.score}</span>`
+      : (h.has_transcript
+          ? `<a href="javascript:void(0)" onclick="scoreOneHook(${h.id}, this)" style="font-size:10.5px;flex:0 0 auto;">score</a>`
+          : '');
+    return `
     <div class="order-row" style="align-items:flex-start;">
       <input type="checkbox" style="margin-top:3px;" ${hookSel.has(h.id)?'checked':''}
              onclick="toggleHookSel(${h.id}, this.checked)"/>
       <div style="flex:1;min-width:0;">
-        <div style="font-weight:600;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(h.label)}</div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-weight:600;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">${esc(h.label)}</span>
+          ${scoreBadge}
+        </div>
         <div style="font-family:var(--mono);font-size:10px;color:var(--text-faint);">
           ${h.duration}s · ${h.has_transcript ? 'captions ready' : 'transcribing…'}
         </div>
+        ${hasScore && h.score_reason ? `<div style="font-size:10.5px;color:var(--text-dim);margin-top:3px;line-height:1.4;">${esc(h.score_reason)}</div>` : ''}
         <video src="/hooks/${encodeURIComponent(h.filename)}" poster="/hooks/${encodeURIComponent(h.filename)}.jpg"
                controls preload="none" style="width:100%;aspect-ratio:16/9;background:#000;border-radius:3px;margin-top:5px;"></video>
       </div>
       <button class="btn danger sm" title="Remove from library" onclick="doDeleteHook(${h.id})">×</button>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 
   const swapCards = swaps.map(s => {
     const prevName = s.filename_subbed || s.filename_raw;
@@ -1794,7 +1807,7 @@ async function drawHooksPanel(container, p){
       <input type="file" id="hookFiles" accept=".mp4,.mov,.avi,.mkv" multiple/>
     </div>
     <div class="field">
-      <label class="field-label">Hook library ${hooks.length ? `(${hooks.length})` : ''}</label>
+      <label class="field-label">Hook library ${hooks.length ? `(${hooks.length}, ranked by AI score)` : ''}</label>
       ${hookRows || '<div class="note">No hooks yet — upload the creators’ hook clips above.</div>'}
     </div>
     <button class="btn sm" id="swapBtn" onclick="runHookSwaps(this)" ${(!hooks.length || processing) ? 'disabled' : ''}>
@@ -1821,6 +1834,18 @@ async function drawHooksPanel(container, p){
       this.value = '';
       drawToolsSidebar();
     };
+  }
+}
+
+async function scoreOneHook(id, link){
+  link.textContent = 'scoring…';
+  try {
+    const r = await API.req(`/api/hooks/${id}/score`, {method:'POST'});
+    toast(`Hook scored ${r.score}/100.`, 'ok');
+    drawToolsSidebar();
+  } catch(e) {
+    toast('Scoring failed: ' + e.message, 'err');
+    link.textContent = 'score';
   }
 }
 

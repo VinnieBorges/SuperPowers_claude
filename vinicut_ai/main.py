@@ -1474,16 +1474,32 @@ def _transcribe_hook_async(hook_id, path):
     transcript still swaps fine (body captions only)."""
     def work():
         try:
-            segs = processor.run_audio_transcription(path)
+            segs = [dict(s) for s in processor.run_audio_transcription(path)]
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("UPDATE hooks SET transcript_json = ? WHERE id = ?",
-                           (json.dumps([dict(s) for s in segs]), hook_id))
+                           (json.dumps(segs), hook_id))
             conn.commit()
             conn.close()
             log.info("Hook %s transcribed (%d caption groups).", hook_id, len(segs))
         except Exception as e:
             log.warning("Hook %s transcription skipped: %s", hook_id, e)
+            return
+
+        # Rank the hook: Claude estimates its scroll-stopping power so the
+        # library can be sorted best-first before anything is rendered.
+        try:
+            rating = ai_editor.score_hook(segs)
+            if rating:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("UPDATE hooks SET score = ?, score_reason = ? WHERE id = ?",
+                               (rating["score"], rating["reason"], hook_id))
+                conn.commit()
+                conn.close()
+                log.info("Hook %s scored %s/100.", hook_id, rating["score"])
+        except Exception as e:
+            log.warning("Hook %s scoring skipped: %s", hook_id, e)
 
     threading.Thread(target=work, daemon=True, name=f"hook-transcribe-{hook_id}").start()
 
@@ -1521,14 +1537,44 @@ async def upload_hook(file: UploadFile = File(...)):
 def list_hooks():
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, filename, label, duration, transcript_json IS NOT NULL, created_at FROM hooks ORDER BY id DESC")
+    # Ranked: scored hooks first (best on top), unscored ones after, newest last.
+    cursor.execute("""
+        SELECT id, filename, label, duration, transcript_json IS NOT NULL, created_at, score, score_reason
+        FROM hooks ORDER BY (score IS NULL) ASC, score DESC, id DESC
+    """)
     rows = cursor.fetchall()
     conn.close()
     return [
         {"id": r[0], "filename": r[1], "label": r[2], "duration": round(r[3] or 0, 2),
-         "has_transcript": bool(r[4]), "created_at": r[5]}
+         "has_transcript": bool(r[4]), "created_at": r[5], "score": r[6], "score_reason": r[7]}
         for r in rows
     ]
+
+
+@app.post("/api/hooks/{hook_id}/score")
+def rescore_hook(hook_id: int):
+    """(Re)scores one hook on demand with the configured AI engine."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT transcript_json FROM hooks WHERE id = ?", (hook_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Hook not found")
+    if not row[0]:
+        raise HTTPException(status_code=400, detail="Hook is still being transcribed — try again shortly.")
+
+    rating = ai_editor.score_hook(json.loads(row[0]))
+    if not rating:
+        raise HTTPException(status_code=502, detail="The AI engine did not return a usable score. Check the AI connection in Settings.")
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE hooks SET score = ?, score_reason = ? WHERE id = ?",
+                   (rating["score"], rating["reason"], hook_id))
+    conn.commit()
+    conn.close()
+    return rating
 
 
 @app.delete("/api/hooks/{hook_id}")

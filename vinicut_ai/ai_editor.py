@@ -256,6 +256,9 @@ Tasks:
    honest retention/virality score from 0-100 (how likely this structure is to
    hold viewers and convert, given THIS script).
 
+Write every name, description and rationale in the SAME LANGUAGE as the
+transcript (e.g. Portuguese for a Portuguese script).
+
 Return ONLY this JSON shape (numbers in seconds):
 {{
   "hook": [0.0, 4.2],
@@ -294,6 +297,50 @@ Return ONLY this JSON shape (numbers in seconds):
         len(result["standard_cuts"]), len(result["variations"]),
     )
     return result
+
+
+def _sanitize_hook_score(data):
+    """Validates the hook-score payload; returns {'score', 'reason'} or None."""
+    if not isinstance(data, dict):
+        return None
+    try:
+        score = max(0, min(100, int(data.get("score"))))
+    except (TypeError, ValueError):
+        return None
+    reason = str(data.get("reason", "")).strip()[:300]
+    return {"score": score, "reason": reason}
+
+
+def score_hook(transcription):
+    """
+    Rates one replacement hook clip's scroll-stopping power (0-100) with a
+    short critique written in the hook's own language. Returns
+    {"score": int, "reason": str} or None when the model is unavailable.
+    """
+    text = " ".join(str(seg.get("text", "")).strip() for seg in (transcription or [])).strip()
+    if not text:
+        return None
+
+    prompt = f"""Rate this HOOK — the opening line(s) of a short-form UGC beauty ad — for
+scroll-stopping power on TikTok/Reels/Shorts.
+
+HOOK TRANSCRIPT:
+"{text}"
+
+Judge like a performance creative strategist: pattern interrupt, curiosity gap,
+specificity, emotional trigger, clarity in the first second, and whether it
+forces the viewer to stay for the payoff. Be honest and use the full 0-100
+range — a generic greeting deserves a low score.
+
+Return ONLY JSON, with the reason written in the SAME LANGUAGE as the hook
+(e.g. Portuguese for a Portuguese hook):
+{{"score": 74, "reason": "1-2 frases explicando a nota."}}"""
+    try:
+        data = llm.chat_json(prompt, system=_SYSTEM_PROMPT, temperature=0.3)
+    except Exception as e:
+        log.warning("Hook scoring failed: %s", e)
+        return None
+    return _sanitize_hook_score(data)
 
 
 def generate_marketing_pack(transcription):
