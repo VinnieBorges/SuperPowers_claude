@@ -233,6 +233,9 @@ def init_db():
         # All UGC footage for this brand is Portuguese; forcing the language
         # beats auto-detect on noisy audio. Editable in Settings.
         ("whisper_language", "pt"),
+        # 0 = release Whisper's VRAM after each transcription so the local
+        # Gemma model has room on single-GPU machines.
+        ("whisper_keep_loaded", "0"),
     ]
     for key, val in default_settings:
         cursor.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)", (key, val))

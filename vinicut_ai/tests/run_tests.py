@@ -327,6 +327,50 @@ def t_ollama_model_listing_and_timeout_hint():
             assert "returned nothing" in str(e) and "NUM_CTX" in str(e), e
 
 
+def t_staged_local_analysis():
+    """The Ollama/Gemma path answers three small questions; each stage falls
+    back independently so one bad reply never discards the whole plan."""
+    from unittest import mock
+
+    transcript = [{"start": 0.5, "end": 2.0, "text": "para tudo, olha isso"},
+                  {"start": 2.4, "end": 8.0, "text": "esse spray transforma o cabelo"},
+                  {"start": 8.5, "end": 11.0, "text": "corre pro site da Hidratei"}]
+
+    # Happy path: three stage replies, merged and sanitized.
+    replies = [
+        {"hook": [0.0, 2.2], "demo": [2.2, 8.2], "cta": [8.2, 12.0]},
+        {"5s": [[0.0, 4.5]], "15s": [[0.0, 2.2], [2.2, 8.2], [8.2, 12.0]]},
+        {"variations": [{"name": "Loop de Curiosidade", "description": "abre com o CTA",
+                          "order": ["CTA", "Hook", "Demo"], "score": 81}]},
+    ]
+    with mock.patch.object(ai_editor.llm, "active_provider", return_value="ollama"), \
+         mock.patch.object(ai_editor.llm, "chat_json", side_effect=replies) as mocked:
+        plan = ai_editor.analyze_transcript_and_segment(transcript, 12.0)
+    assert mocked.call_count == 3
+    assert plan["hook"] == [0.0, 2.2] and plan["cta"][1] == 12.0
+    assert "5s" in plan["standard_cuts"] and "15s" in plan["standard_cuts"]
+    assert plan["variations"][0]["name"] == "Loop de Curiosidade"
+    assert plan["variations"][0]["score"] == 81
+
+    # Degraded path: stage 1 garbage, stages 2-3 crash -> valid plan anyway.
+    with mock.patch.object(ai_editor.llm, "active_provider", return_value="ollama"), \
+         mock.patch.object(ai_editor.llm, "chat_json",
+                           side_effect=["not json at all" and {"hook": "junk"},
+                                        RuntimeError("boom"), RuntimeError("boom")]):
+        plan = ai_editor.analyze_transcript_and_segment(transcript, 12.0)
+    assert plan["hook"][0] == 0.0 and plan["cta"][1] == 12.0
+    assert plan["standard_cuts"] == {}
+    assert len(plan["variations"]) == 3  # defaults
+
+    # Cloud providers keep the single-shot path (one call).
+    single = {"hook": [0, 2], "demo": [2, 8], "cta": [8, 12],
+              "standard_cuts": {}, "variations": []}
+    with mock.patch.object(ai_editor.llm, "active_provider", return_value="anthropic"), \
+         mock.patch.object(ai_editor.llm, "chat_json", return_value=single) as mocked:
+        ai_editor.analyze_transcript_and_segment(transcript, 12.0)
+    assert mocked.call_count == 1
+
+
 def t_hook_score_sanitizer():
     assert ai_editor._sanitize_hook_score({"score": 87, "reason": "Ótimo gancho, gera curiosidade."}) == \
         {"score": 87, "reason": "Ótimo gancho, gera curiosidade."}
@@ -765,6 +809,7 @@ def main():
     check("silence jump-cut slice splitting", t_silence_split_logic)
     check("loudnorm audio chain append", t_loudnorm_append)
     check("ollama model listing + timeout hint + keep_alive", t_ollama_model_listing_and_timeout_hint)
+    check("staged local analysis (Gemma path) + per-stage fallback", t_staged_local_analysis)
     check("hook score sanitizer + PT reason passthrough", t_hook_score_sanitizer)
     check("settings + provider fallback logic", t_db_settings_roundtrip)
 

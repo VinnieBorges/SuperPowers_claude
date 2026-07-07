@@ -235,6 +235,11 @@ def analyze_transcript_and_segment(transcription, total_dur):
         log.info("Empty transcript; using fallback segmentation.")
         return get_fallback_segmentation(total_dur)
 
+    # Local models (Gemma via Ollama — the primary engine) do far better on
+    # three small, focused questions than on one giant nested-JSON request.
+    if llm.active_provider() == "ollama":
+        return _analyze_staged_local(transcription, total_dur)
+
     prompt = f"""Analyze this UGC ad transcript. The video is {total_dur:.2f} seconds long.
 
 TRANSCRIPT (each line is [start-end] text, in seconds):
@@ -295,6 +300,89 @@ Return ONLY this JSON shape (numbers in seconds):
         "AI plan: hook=%.1f-%.1f demo=%.1f-%.1f cta=%.1f-%.1f, %d ai standard cuts, %d variations",
         *boundaries["hook"], *boundaries["demo"], *boundaries["cta"],
         len(result["standard_cuts"]), len(result["variations"]),
+    )
+    return result
+
+
+def _analyze_staged_local(transcription, total_dur):
+    """
+    Gemma-friendly analysis: three small calls instead of one giant one, each
+    with an independent fallback. A 12B answering one narrow question with a
+    flat JSON shape is dramatically more reliable than the combined request,
+    and a single bad stage no longer throws away the whole plan.
+    """
+    fallback = get_fallback_segmentation(total_dur)
+    # Smaller transcript budget: fits comfortably in the local context window
+    # with room for the answer, and keeps generation fast.
+    transcript_text = _fmt_transcript(transcription, max_chars=3500)
+
+    # Stage 1 — semantic boundaries (the decision everything else builds on).
+    boundaries = {k: fallback[k] for k in ("hook", "demo", "cta")}
+    try:
+        data = llm.chat_json(
+            f"""This UGC ad transcript is {total_dur:.2f} seconds long:
+
+{transcript_text}
+
+Find the semantic boundaries of the three parts (contiguous, covering 0 to {total_dur:.2f}):
+- hook: the attention-grabbing opening
+- demo: the product demonstration / benefits
+- cta: the closing call to action
+
+Return ONLY JSON: {{"hook": [0.0, 4.2], "demo": [4.2, 21.7], "cta": [21.7, {total_dur:.2f}]}}""",
+            system=_SYSTEM_PROMPT,
+        )
+        boundaries = _sanitize_boundaries(data if isinstance(data, dict) else {}, total_dur)
+    except Exception as e:
+        log.warning("Local analysis stage 1 (boundaries) failed (%s); using fallback boundaries.", e)
+
+    # Stage 2 — best source ranges per duration. Optional: when it fails, the
+    # renderer's own budget planner takes over per duration.
+    standard_cuts = {}
+    try:
+        data = llm.chat_json(
+            f"""This UGC ad transcript is {total_dur:.2f} seconds long. The hook is
+{boundaries['hook'][0]:.1f}-{boundaries['hook'][1]:.1f}s, demo {boundaries['demo'][0]:.1f}-{boundaries['demo'][1]:.1f}s, cta {boundaries['cta'][0]:.1f}-{boundaries['cta'][1]:.1f}s.
+
+{transcript_text}
+
+For each target duration, pick the EXACT source time ranges (chronological,
+complete sentences, combined length close to the target; hook material first
+and CTA material last, except 5s which is hook-only).
+
+Return ONLY JSON like:
+{{"5s": [[0.0, 4.8]], "15s": [[0.0, 4.2], [8.5, 15.1]], "30s": [[0.0, 4.2], [4.2, 20.0], [21.7, {total_dur:.2f}]], "60s": [[0.0, {total_dur:.2f}]]}}""",
+            system=_SYSTEM_PROMPT,
+        )
+        standard_cuts = _sanitize_standard_cuts({"standard_cuts": data if isinstance(data, dict) else {}}, total_dur)
+    except Exception as e:
+        log.warning("Local analysis stage 2 (standard cuts) failed (%s); renderer will use its own plan.", e)
+
+    # Stage 3 — creative variations with retention scores.
+    variations = [dict(v) for v in DEFAULT_VARIATIONS]
+    try:
+        data = llm.chat_json(
+            f"""This is the transcript of a UGC product ad:
+
+{transcript_text}
+
+Propose 3 montage variations re-ordering the parts (use only "Hook", "Demo",
+"CTA"), each with a short marketing rationale and an honest 0-100 retention
+score for THIS script. Write names and rationales in the transcript's language.
+
+Return ONLY JSON:
+{{"variations": [{{"name": "...", "description": "...", "order": ["CTA", "Hook", "Demo"], "score": 78}}]}}""",
+            system=_SYSTEM_PROMPT, temperature=0.4,
+        )
+        variations = _sanitize_variations(data if isinstance(data, dict) else {})
+    except Exception as e:
+        log.warning("Local analysis stage 3 (variations) failed (%s); using default variations.", e)
+
+    result = {**boundaries, "standard_cuts": standard_cuts, "variations": variations}
+    log.info(
+        "Local AI plan (staged): hook=%.1f-%.1f demo=%.1f-%.1f cta=%.1f-%.1f, %d ai cuts, %d variations",
+        *boundaries["hook"], *boundaries["demo"], *boundaries["cta"],
+        len(standard_cuts), len(variations),
     )
     return result
 

@@ -5,6 +5,21 @@ AI-powered short-form video factory: drop raw UGC footage in, get retention-opti
 **Hook / Demo / CTA**, re-ordered into montage variations, and burned with karaoke-style
 captions. Now with a **Claude-powered editorial brain**.
 
+## What's new in v2.7 — local-first: built around Ollama + Gemma
+
+The local engine is now the primary path, engineered for a 12B-class model:
+
+- **Staged analysis for local models.** Instead of one giant nested-JSON
+  request (Claude-grade work), Gemma answers three small, focused questions —
+  boundaries, best cut ranges, variations — each with an independent fallback.
+  One bad answer no longer discards the whole plan.
+- **Whisper releases its VRAM (~3 GB) after every transcription** so Gemma has
+  room on single-GPU machines — the classic cause of Ollama OOM crashes.
+  (`whisper_keep_loaded=1` restores the old caching for multi-GPU setups.)
+- **Ollama is the explicit default provider**, listed first in Settings; the
+  local transcript budget is tuned to the 8k context window.
+- Claude stays one dropdown away as an optional cloud upgrade.
+
 ## What's new in v2.3 — AI hook ranking + Portuguese-first
 
 - **Hooks are ranked before you render.** Right after a creator hook is

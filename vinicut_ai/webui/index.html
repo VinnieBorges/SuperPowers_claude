@@ -1468,12 +1468,12 @@ function drawToolsSidebar() {
         const s = await API.settings();
         const llmInfo = s.llm || {};
         const providers = [
-          ['auto', 'Auto — Claude if key present, else local'],
+          ['ollama', 'Local LLM — Ollama / Gemma (recommended)'],
           ['anthropic', 'Claude API'],
-          ['ollama', 'Local LLM (Ollama)']
+          ['auto', 'Auto — Claude if key present, else local']
         ];
         const provOpts = providers.map(([v, lab]) =>
-          `<option value="${v}" ${v === (s.llm_provider || 'auto') ? 'selected' : ''}>${lab}</option>`).join('');
+          `<option value="${v}" ${v === (s.llm_provider || 'ollama') ? 'selected' : ''}>${lab}</option>`).join('');
         const keyLine = llmInfo.anthropic_available
           ? '<span style="color:var(--ok);">Claude API key detected</span>'
           : '<span style="color:var(--err);">No Claude API key — add ANTHROPIC_API_KEY to .env to enable</span>';

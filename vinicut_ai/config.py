@@ -97,12 +97,11 @@ WORKERS = max(1, min(4, env_int("VINICUT_WORKERS", 1)))
 # ---------------------------------------------------------------------------
 # AI providers
 # ---------------------------------------------------------------------------
-# llm provider: "auto" (Claude when ANTHROPIC_API_KEY is set, else local
-# Ollama), "anthropic" (Claude API), "ollama" (local), or "openai" (any
-# OpenAI-compatible endpoint: OpenAI, Groq, Together, vLLM, LM Studio, ...).
-# The DB `system_settings` table can override this at runtime from the UI;
-# these are the boot defaults.
-LLM_PROVIDER_DEFAULT = env("VINICUT_LLM_PROVIDER", "auto")
+# llm provider: "ollama" (local Gemma — the primary engine), "anthropic"
+# (Claude API), "auto" (Claude when ANTHROPIC_API_KEY is set, else Ollama),
+# or "openai" (any OpenAI-compatible endpoint). The DB `system_settings`
+# table can override this at runtime from the UI; these are the boot defaults.
+LLM_PROVIDER_DEFAULT = env("VINICUT_LLM_PROVIDER", "ollama")
 OLLAMA_HOST = env("OLLAMA_HOST", "http://localhost:11434")
 # 12B is the sweet spot for this pipeline: big models (26B+) routinely blow
 # past HTTP timeouts on consumer GPUs while loading/offloading.

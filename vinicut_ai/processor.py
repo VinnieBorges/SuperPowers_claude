@@ -321,8 +321,17 @@ def run_audio_transcription(video_path):
                 "words": [{"word": w.word.strip(), "start": w.start, "end": w.end} for w in current_words]
             })
 
-    # Unload Whisper from CUDA VRAM
+    # Free Whisper's VRAM (~3 GB) so the local Gemma model has room — on a
+    # single GPU the two together are the classic cause of Ollama OOM crashes.
+    # Set whisper_keep_loaded=1 to trade VRAM for faster back-to-back
+    # transcriptions (multi-GPU or CPU-whisper setups).
+    keep_loaded = str(database.get_setting("whisper_keep_loaded", "0")).strip().lower() in ("1", "true", "yes", "on")
     del model
+    if not keep_loaded:
+        with _whisper_lock:
+            _cached_whisper_model = None
+            _cached_whisper_model_name = None
+        log.info("[Whisper] Model unloaded from VRAM (freeing space for the local LLM).")
     if torch is not None:
         gc.collect()
         torch.cuda.empty_cache()
