@@ -228,51 +228,53 @@ def run_vision_analysis(video_path, model_name="llama3.2-vision:latest"):
 
 _cached_whisper_model = None
 _cached_whisper_model_name = None
+# Sticks after a CUDA runtime failure (missing cublas/cudnn DLLs) so every
+# following load goes straight to CPU instead of failing again per video.
+_whisper_force_cpu = False
 import threading
 _whisper_lock = threading.Lock()
 
-def run_audio_transcription(video_path):
-    """
-    Runs Faster-Whisper to transcribe the video with word-level timestamps.
-    Returns a list of subtitle segments.
-    """
-    if WhisperModel is None:
-        raise ImportError("faster-whisper is not installed or importable.")
+_GPU_LIB_HINT = ("Enable GPU transcription with: pip install nvidia-cublas-cu12 "
+                 "nvidia-cudnn-cu12 (or re-run install.bat).")
 
-    import database
-    whisper_model = database.get_setting("whisper_model", "large-v3")
-    whisper_prompt = get_system_prompt("whisper")
 
+def _is_cuda_lib_error(err):
+    """CUDA/cuBLAS/cuDNN runtime library problems (e.g. 'Library
+    cublas64_12.dll is not found or cannot be loaded')."""
+    s = str(err).lower()
+    return any(k in s for k in ("cublas", "cudnn", "cuda", "nvrtc"))
+
+
+def _load_whisper_locked(model_name):
+    """Loads (or returns cached) Whisper model. Caller holds _whisper_lock."""
     global _cached_whisper_model, _cached_whisper_model_name
+    if _cached_whisper_model is not None and _cached_whisper_model_name == model_name:
+        return _cached_whisper_model
 
-    with _whisper_lock:
-        if _cached_whisper_model is None or _cached_whisper_model_name != whisper_model:
-            log.info("[Whisper] Loading model '%s' into memory...", whisper_model)
-            try:
-                # Use int8_float16 to optimize RAM/VRAM footprint while keeping GPU acceleration
-                _cached_whisper_model = WhisperModel(whisper_model, device="cuda", compute_type="int8_float16")
-                _cached_whisper_model_name = whisper_model
-                log.info("[Whisper] Loaded model '%s' on GPU (CUDA, int8_float16).", whisper_model)
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                log.warning("[Whisper] GPU initialization failed (%s). Falling back to CPU.", e)
-                try:
-                    _cached_whisper_model = WhisperModel(whisper_model, device="cpu", compute_type="int8")
-                    _cached_whisper_model_name = whisper_model
-                    log.info("[Whisper] Loaded model '%s' on CPU (int8).", whisper_model)
-                except Exception as ex:
-                    log.error("[Whisper] Critical error loading model on CPU: %s", ex)
-                    raise ex
+    log.info("[Whisper] Loading model '%s' into memory...", model_name)
+    if not _whisper_force_cpu:
+        try:
+            # int8_float16 optimizes RAM/VRAM footprint while keeping GPU acceleration
+            _cached_whisper_model = WhisperModel(model_name, device="cuda", compute_type="int8_float16")
+            _cached_whisper_model_name = model_name
+            log.info("[Whisper] Loaded model '%s' on GPU (CUDA, int8_float16).", model_name)
+            return _cached_whisper_model
+        except Exception as e:
+            log.warning("[Whisper] GPU initialization failed (%s). Falling back to CPU. %s", e, _GPU_LIB_HINT)
 
-        model = _cached_whisper_model
+    _cached_whisper_model = WhisperModel(model_name, device="cpu", compute_type="int8")
+    _cached_whisper_model_name = model_name
+    log.info("[Whisper] Loaded model '%s' on CPU (int8).", model_name)
+    return _cached_whisper_model
 
-    # Optional forced language ("auto" lets Whisper detect it per video).
-    lang = (database.get_setting("whisper_language", "auto") or "auto").strip().lower()
-    language = None if lang in ("", "auto") else lang
 
-    # Use beam_size=1 (greedy decoding) and vad_filter=True (silence skipping) to speed up transcription and reduce memory
-    segments, info = model.transcribe(
+def _transcribe_grouped(model, video_path, language, whisper_prompt):
+    """
+    Runs transcription and groups words for UGC caption styling (max 3 words /
+    1.5s per group). The segments generator is consumed HERE, which is where
+    CUDA runtime-library failures actually surface.
+    """
+    segments, _info = model.transcribe(
         video_path,
         beam_size=1,
         vad_filter=True,
@@ -281,7 +283,6 @@ def run_audio_transcription(video_path):
         initial_prompt=whisper_prompt
     )
 
-    # Extract segments with word details and group them for UGC styling (max 3 words / 1.5s)
     grouped_segments = []
     max_words = 3
     max_duration = 1.5
@@ -320,6 +321,50 @@ def run_audio_transcription(video_path):
                 "text": text,
                 "words": [{"word": w.word.strip(), "start": w.start, "end": w.end} for w in current_words]
             })
+
+    return grouped_segments
+
+
+def run_audio_transcription(video_path):
+    """
+    Runs Faster-Whisper to transcribe the video with word-level timestamps.
+    Returns a list of subtitle segments.
+    """
+    if WhisperModel is None:
+        raise ImportError("faster-whisper is not installed or importable.")
+
+    import database
+    whisper_model = database.get_setting("whisper_model", "large-v3")
+    whisper_prompt = get_system_prompt("whisper")
+
+    global _cached_whisper_model, _cached_whisper_model_name, _whisper_force_cpu
+
+    with _whisper_lock:
+        model = _load_whisper_locked(whisper_model)
+
+    # Optional forced language ("auto" lets Whisper detect it per video).
+    lang = (database.get_setting("whisper_language", "auto") or "auto").strip().lower()
+    language = None if lang in ("", "auto") else lang
+
+    try:
+        grouped_segments = _transcribe_grouped(model, video_path, language, whisper_prompt)
+    except Exception as e:
+        # The CUDA constructor can succeed while cuBLAS/cuDNN DLLs are missing;
+        # the failure only appears when transcription actually runs. Rebuild on
+        # CPU once and remember the decision for all future loads.
+        if not _is_cuda_lib_error(e):
+            raise
+        log.warning("[Whisper] GPU libraries unavailable at runtime (%s). "
+                    "Retrying this video on CPU. %s", e, _GPU_LIB_HINT)
+        _whisper_force_cpu = True
+        with _whisper_lock:
+            _cached_whisper_model = None
+            _cached_whisper_model_name = None
+            if torch is not None:
+                gc.collect()
+                torch.cuda.empty_cache()
+            model = _load_whisper_locked(whisper_model)
+        grouped_segments = _transcribe_grouped(model, video_path, language, whisper_prompt)
 
     # Free Whisper's VRAM (~3 GB) so the local Gemma model has room — on a
     # single GPU the two together are the classic cause of Ollama OOM crashes.

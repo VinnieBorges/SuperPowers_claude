@@ -138,17 +138,16 @@ workspace and never touch your real database or media.
 
 ## Quick start (Windows)
 
-1. **Install once** — double-click **`install.bat`**. It installs Python,
-   FFmpeg and Ollama (via winget), the Python dependencies, GPU transcription
-   acceleration when an NVIDIA card is present, pulls the local AI model
-   (`gemma4:12b`, ~8 GB) and pre-downloads the Whisper model (~3 GB), and
-   creates your `.env`.
-2. **Enable Claude** *(optional, recommended)* — edit `.env` and paste your
-   `ANTHROPIC_API_KEY` (from console.anthropic.com). Without a key the app
-   runs fully local via Ollama.
-3. **Daily use** — double-click `run.bat`; it opens
-   `http://127.0.0.1:8000`. **Verify** anytime with `run.bat test`
-   (self-test suite).
+1. **Double-click `run.bat`** — every launch verifies the whole stack and
+   auto-installs anything missing: Python, FFmpeg, Ollama (winget), Python
+   dependencies, NVIDIA GPU transcription libraries, the local AI model
+   (`gemma4:12b`, ~8 GB on first run) and the Whisper model (~3 GB on first
+   run). If a fresh Python install isn't visible yet, it tells you to reopen
+   the window and continues from where it stopped.
+2. **Enable Claude** *(optional)* — edit `.env` and paste your
+   `ANTHROPIC_API_KEY`. The primary engine is local Ollama + Gemma.
+3. **Verify** anytime with `run.bat test` (self-test suite).
+   `install.bat` remains available as a verbose first-time installer.
 
 Linux/macOS: install FFmpeg + Ollama yourself, then
 `pip install -r requirements.txt && python main.py`.

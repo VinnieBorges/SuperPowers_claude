@@ -327,6 +327,14 @@ def t_ollama_model_listing_and_timeout_hint():
             assert "returned nothing" in str(e) and "NUM_CTX" in str(e), e
 
 
+def t_cuda_lib_error_classifier():
+    assert processor._is_cuda_lib_error("Library cublas64_12.dll is not found or cannot be loaded")
+    assert processor._is_cuda_lib_error("Could not load library libcudnn_ops_infer.so.8")
+    assert processor._is_cuda_lib_error(RuntimeError("CUDA driver version is insufficient"))
+    assert not processor._is_cuda_lib_error("No such file or directory: video.mp4")
+    assert not processor._is_cuda_lib_error("out of range float values")
+
+
 def t_staged_local_analysis():
     """The Ollama/Gemma path answers three small questions; each stage falls
     back independently so one bad reply never discards the whole plan."""
@@ -809,6 +817,7 @@ def main():
     check("silence jump-cut slice splitting", t_silence_split_logic)
     check("loudnorm audio chain append", t_loudnorm_append)
     check("ollama model listing + timeout hint + keep_alive", t_ollama_model_listing_and_timeout_hint)
+    check("CUDA library error classifier (whisper CPU fallback)", t_cuda_lib_error_classifier)
     check("staged local analysis (Gemma path) + per-stage fallback", t_staged_local_analysis)
     check("hook score sanitizer + PT reason passthrough", t_hook_score_sanitizer)
     check("settings + provider fallback logic", t_db_settings_roundtrip)
