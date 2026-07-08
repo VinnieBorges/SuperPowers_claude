@@ -1517,6 +1517,11 @@ function drawToolsSidebar() {
             <input type="text" id="se_lang" value="${esc(s.whisper_language||'auto')}" placeholder="auto, pt, en, es…"/>
             <div style="font-size:10.5px;color:var(--text-faint);">"auto" detects per video; forcing a code (e.g. pt) improves accuracy on noisy audio.</div>
           </div>
+          <div class="field">
+            <label class="field-label">Variation durations</label>
+            <input type="text" id="se_vardur" value="${esc(s.variation_durations||'15,30')}" placeholder="15,30"/>
+            <div style="font-size:10.5px;color:var(--text-faint);">Lengths rendered for each AI variation (from 5,15,30,60). Fewer = much faster projects; "5,15,30,60" restores the full matrix.</div>
+          </div>
           <button class="btn sm" onclick="saveSettings(this)" style="align-self:flex-start;">Save settings</button>
 
           <hr class="divider"/>
@@ -1990,6 +1995,7 @@ async function saveSettings(btn){
   if ($('#se_provider')) s.llm_provider = $('#se_provider').value;
   if ($('#se_claude')) s.anthropic_model = $('#se_claude').value;
   if ($('#se_lang')) s.whisper_language = $('#se_lang').value.trim() || 'auto';
+  if ($('#se_vardur')) s.variation_durations = $('#se_vardur').value.trim() || '15,30';
   Object.keys(s).forEach(k=>{ if(s[k]===undefined) delete s[k]; });
   btn.disabled = true;
   btn.textContent = 'Saving…';

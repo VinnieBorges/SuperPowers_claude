@@ -123,44 +123,62 @@ def _run_process(args, progress_callback=None, duration=None):
     return subprocess.CompletedProcess(args, p.returncode, stdout, stderr)
 
 
+def _to_cpu_args(args):
+    """Translates an NVENC command line to its libx264 equivalent."""
+    cpu_args = []
+    skip_next = False
+    for idx, val in enumerate(args):
+        if skip_next:
+            skip_next = False
+            continue
+        nxt = args[idx + 1] if idx + 1 < len(args) else None
+        if val == "h264_nvenc":
+            cpu_args.append("libx264")
+        elif val == "-preset" and nxt in ("p1", "p2", "p3", "p4", "p5", "p6", "p7"):
+            cpu_args += ["-preset", "medium"]
+            skip_next = True
+        elif val == "-rc":                       # NVENC rate-control mode
+            skip_next = True
+        elif val == "-cq":                       # NVENC quality -> x264 CRF
+            cpu_args += ["-crf", "21"]
+            skip_next = True
+        elif val == "-b:v" and nxt == "0":       # "let CQ drive it" is NVENC-only
+            skip_next = True
+        elif val == "-tune" and nxt == "hq":     # NVENC tune name x264 doesn't know
+            skip_next = True
+        else:
+            cpu_args.append(val)
+    return cpu_args
+
+
+# Once NVENC fails on this machine it will fail every time; remember it so the
+# remaining ~30 encodes per project skip the doomed attempt (and its 1-3s cost)
+# and go straight to CPU.
+_nvenc_state = {"broken": False}
+
+
 def run_command(args, desc="ffmpeg", check=True, progress_callback=None, duration=None):
     """
     Runs an external command as an argument list (shell=False) so that file
     paths containing spaces or shell metacharacters (%, &, (), !, ...) are
     passed literally and can never be reinterpreted by the shell.
 
-    If the command uses h264_nvenc hardware acceleration and fails, we automatically
-    fall back to CPU-based libx264 encoding to support all machine configurations.
+    If the command uses h264_nvenc hardware acceleration and fails, we
+    automatically fall back to CPU-based libx264 encoding — and remember the
+    failure so subsequent encodes skip the NVENC attempt entirely.
     """
+    if "h264_nvenc" in args and _nvenc_state["broken"]:
+        args = _to_cpu_args(args)
+        desc = f"{desc} (CPU)"
+
     result = _run_process(args, progress_callback, duration)
 
     if result.returncode != 0 and "h264_nvenc" in args:
-        log.warning("NVENC failed for '%s'. Retrying with CPU libx264 fallback...", desc)
-        # Rebuild the command translating NVENC-only options to libx264 ones.
-        cpu_args = []
-        skip_next = False
-        for idx, val in enumerate(args):
-            if skip_next:
-                skip_next = False
-                continue
-            nxt = args[idx + 1] if idx + 1 < len(args) else None
-            if val == "h264_nvenc":
-                cpu_args.append("libx264")
-            elif val == "-preset" and nxt in ("p1", "p2", "p3", "p4", "p5", "p6", "p7"):
-                cpu_args += ["-preset", "medium"]
-                skip_next = True
-            elif val == "-rc":                       # NVENC rate-control mode
-                skip_next = True
-            elif val == "-cq":                       # NVENC quality -> x264 CRF
-                cpu_args += ["-crf", "21"]
-                skip_next = True
-            elif val == "-b:v" and nxt == "0":       # "let CQ drive it" is NVENC-only
-                skip_next = True
-            elif val == "-tune" and nxt == "hq":     # NVENC tune name x264 doesn't know
-                skip_next = True
-            else:
-                cpu_args.append(val)
-        result = _run_process(cpu_args, progress_callback, duration)
+        if not _nvenc_state["broken"]:
+            _nvenc_state["broken"] = True
+            log.warning("NVENC unavailable on this machine — using CPU (libx264) "
+                        "for all renders this session. First failure: '%s'.", desc)
+        result = _run_process(_to_cpu_args(args), progress_callback, duration)
         desc = f"{desc} (CPU fallback)"
 
     if check and result.returncode != 0:

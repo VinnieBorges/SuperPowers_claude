@@ -327,6 +327,46 @@ def t_ollama_model_listing_and_timeout_hint():
             assert "returned nothing" in str(e) and "NUM_CTX" in str(e), e
 
 
+def t_nvenc_failure_memo():
+    """After the first NVENC failure, encodes go straight to CPU args."""
+    from unittest import mock
+    calls = []
+
+    def fake_run(args, progress_callback=None, duration=None):
+        calls.append(list(args))
+        rc = 1 if "h264_nvenc" in args else 0
+        import subprocess
+        return subprocess.CompletedProcess(args, rc, "", "nvenc says no" if rc else "")
+
+    nvenc_args = ["ffmpeg", "-i", "in.mp4", "-c:v", "h264_nvenc", "-preset", "p5",
+                  "-rc", "vbr", "-cq", "23", "-b:v", "0", "-y", "out.mp4"]
+    prev = dict(render_engine._nvenc_state)
+    try:
+        render_engine._nvenc_state["broken"] = False
+        with mock.patch.object(render_engine, "_run_process", side_effect=fake_run):
+            render_engine.run_command(list(nvenc_args), desc="t1", check=False)
+            render_engine.run_command(list(nvenc_args), desc="t2", check=False)
+    finally:
+        render_engine._nvenc_state.update(prev)
+
+    # Call 1: nvenc attempt, then CPU retry. Call 2: straight to CPU (memoized).
+    assert len(calls) == 3, [c[4] if len(c) > 4 else c for c in calls]
+    assert "h264_nvenc" in calls[0]
+    assert "libx264" in calls[1] and "-crf" in calls[1] and "-rc" not in calls[1]
+    assert "libx264" in calls[2] and "h264_nvenc" not in calls[2]
+
+
+def t_variation_durations_setting():
+    import main as app_main
+    database.update_setting("variation_durations", "15,30")
+    assert app_main.variation_render_durations() == [15, 30]
+    database.update_setting("variation_durations", "5, 60; banana, 30, 30")
+    assert app_main.variation_render_durations() == [5, 30, 60]
+    database.update_setting("variation_durations", "garbage")
+    assert app_main.variation_render_durations() == [15, 30]   # safe default
+    database.update_setting("variation_durations", "15,30")
+
+
 def t_cuda_lib_error_classifier():
     assert processor._is_cuda_lib_error("Library cublas64_12.dll is not found or cannot be loaded")
     assert processor._is_cuda_lib_error("Could not load library libcudnn_ops_infer.so.8")
@@ -817,6 +857,8 @@ def main():
     check("silence jump-cut slice splitting", t_silence_split_logic)
     check("loudnorm audio chain append", t_loudnorm_append)
     check("ollama model listing + timeout hint + keep_alive", t_ollama_model_listing_and_timeout_hint)
+    check("NVENC failure memoization (straight to CPU)", t_nvenc_failure_memo)
+    check("variation durations setting parser", t_variation_durations_setting)
     check("CUDA library error classifier (whisper CPU fallback)", t_cuda_lib_error_classifier)
     check("staged local analysis (Gemma path) + per-stage fallback", t_staged_local_analysis)
     check("hook score sanitizer + PT reason passthrough", t_hook_score_sanitizer)

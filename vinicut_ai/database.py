@@ -236,6 +236,9 @@ def init_db():
         # 0 = release Whisper's VRAM after each transcription so the local
         # Gemma model has room on single-GPU machines.
         ("whisper_keep_loaded", "0"),
+        # Durations rendered for each AI variation. The full matrix
+        # ("5,15,30,60") costs up to 24 encodes per project.
+        ("variation_durations", "15,30"),
     ]
     for key, val in default_settings:
         cursor.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)", (key, val))

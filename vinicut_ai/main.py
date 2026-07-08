@@ -305,6 +305,8 @@ def sequential_queue_worker():
 
             project_id, filename = row
             render_engine.set_current_project(project_id)
+            t_start = time.time()
+            t_analyzed = t_transcribed = t_cuts = t_start
 
             if is_project_stopped(project_id):
                 set_project_status(project_id, "failed", error="Stopped by user")
@@ -336,6 +338,7 @@ def sequential_queue_worker():
             except Exception as e:
                 log.warning("Transcription failed for project %s: %s", project_id, e)
                 transcription = [{"start": 0.0, "end": 5.0, "text": "Failed to transcribe."}]
+            t_transcribed = time.time()
 
             # Step 2: AI editorial analysis (Claude / Ollama via llm.py)
             try:
@@ -351,27 +354,17 @@ def sequential_queue_worker():
                 "standard_cuts": ai_data.get("standard_cuts", {}),
             }
 
-            # Ready-to-post marketing copy (hooks/captions/hashtags). Optional:
-            # a failure here must never block the render.
-            marketing_json = None
-            try:
-                pack = ai_editor.generate_marketing_pack(transcription)
-                if pack:
-                    marketing_json = json.dumps(pack)
-            except Exception as me:
-                log.warning("Marketing pack failed for project %s: %s", project_id, me)
-
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("""
                 UPDATE projects
-                SET segments_map_json = ?, transcript_json = ?, marketing_json = COALESCE(?, marketing_json),
-                    status = 'rendering', progress = 5
+                SET segments_map_json = ?, transcript_json = ?, status = 'rendering', progress = 5
                 WHERE id = ?
-            """, (json.dumps(segments_map), json.dumps(transcription), marketing_json, project_id))
+            """, (json.dumps(segments_map), json.dumps(transcription), project_id))
             conn.commit()
             conn.close()
             broadcast_sync({"type": "status", "project_id": project_id, "status": "rendering", "progress": 5})
+            t_analyzed = time.time()
 
             if is_project_stopped(project_id):
                 raise RuntimeError("Project rendering was stopped by the user.")
@@ -388,12 +381,23 @@ def sequential_queue_worker():
                 progress_callback=make_progress_reporter(project_id, 5.0, 50.0),
             )
 
+            t_cuts = time.time()
+
             # Step 4: AI montage variations — 55% -> 95% overall
             render_ai_variations(project_id, filename, video_path, transcription,
                                  segments_map, ai_data, total_dur)
 
             set_project_status(project_id, "completed", progress=100)
-            log.info("Project %s completed.", project_id)
+            t_done = time.time()
+            log.info(
+                "Project %s completed in %.0fs (transcribe %.0fs, AI %.0fs, cuts %.0fs, variations %.0fs).",
+                project_id, t_done - t_start, t_transcribed - t_start,
+                t_analyzed - t_transcribed, t_cuts - t_analyzed, t_done - t_cuts,
+            )
+
+            # Marketing copy is generated AFTER the deliverables exist — it was
+            # previously blocking the render behind another slow local-LLM call.
+            generate_marketing_async(project_id, transcription)
 
             try:
                 database.run_self_improvement_loop(project_id)
@@ -414,6 +418,45 @@ def sequential_queue_worker():
                 time.sleep(2.0)
         finally:
             render_engine.set_current_project(None)
+
+
+def generate_marketing_async(project_id, transcription):
+    """Generates the marketing pack in the background so deliverables never
+    wait on an extra local-LLM call. Best effort."""
+    def work():
+        try:
+            pack = ai_editor.generate_marketing_pack(transcription)
+            if not pack:
+                return
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("UPDATE projects SET marketing_json = ? WHERE id = ?",
+                           (json.dumps(pack), project_id))
+            conn.commit()
+            conn.close()
+            log.info("Marketing pack ready for project %s.", project_id)
+        except Exception as e:
+            log.warning("Marketing pack failed for project %s: %s", project_id, e)
+
+    threading.Thread(target=work, daemon=True, name=f"marketing-{project_id}").start()
+
+
+def variation_render_durations():
+    """
+    Which durations to render for every AI variation. Full matrix (5,15,30,60)
+    means up to 24 encodes per project; the default renders the lengths that
+    actually get posted. Setting: variation_durations = "15,30".
+    """
+    raw = database.get_setting("variation_durations", "15,30") or ""
+    durations = []
+    for part in raw.replace(";", ",").split(","):
+        try:
+            val = int(part.strip())
+        except ValueError:
+            continue
+        if val in config.STANDARD_CUT_DURATIONS and val not in durations:
+            durations.append(val)
+    return sorted(durations) or [15, 30]
 
 
 def resolve_style_preset(project_id, default="Bold Yellow"):
@@ -454,7 +497,7 @@ def render_ai_variations(project_id, filename, video_path, transcription, segmen
     animation, fade_ms = processor.get_subtitle_animation_settings()
 
     variations = ai_data.get("variations", [])
-    durations = list(config.STANDARD_CUT_DURATIONS)
+    durations = variation_render_durations()
     combos_total = max(1, len(variations) * len(durations))
     combo_idx = 0
     progress = make_progress_reporter(project_id, 55.0, 40.0)
@@ -1855,6 +1898,7 @@ def get_system_settings():
         "silence_removal": database.get_setting("silence_removal", "1"),
         "audio_normalize": database.get_setting("audio_normalize", "1"),
         "whisper_language": database.get_setting("whisper_language", "auto"),
+        "variation_durations": database.get_setting("variation_durations", "15,30"),
         "agent_notes": agent_notes,
         "disk_usage": {
             "total_gb": round(total / (1024 ** 3), 2),
