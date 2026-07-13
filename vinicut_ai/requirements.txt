@@ -1,0 +1,14 @@
+# Vinicut AI — backend dependencies
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+requests>=2.31
+pydantic>=2.6
+
+# Local transcription (GPU-accelerated when CUDA is available)
+faster-whisper>=1.0
+
+# Optional GPU stack for faster-whisper on NVIDIA cards (Windows):
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+#   pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
+# torch is optional — the pipeline falls back to CPU int8 automatically.
