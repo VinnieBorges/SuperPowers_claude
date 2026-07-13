@@ -8,6 +8,7 @@ portable across machines and deployable to a server without code edits.
 Precedence: environment variable > .env file > default.
 """
 import os
+import sys
 import logging
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -128,6 +129,12 @@ LLM_TIMEOUT_SECONDS = env_int("VINICUT_LLM_TIMEOUT", 300)
 LLM_MAX_RETRIES = env_int("VINICUT_LLM_RETRIES", 2)
 
 WHISPER_MODEL_DEFAULT = env("VINICUT_WHISPER_MODEL", "large-v3")
+# Whether Whisper stays resident between transcriptions. On Apple Silicon the
+# memory is unified (no VRAM war with the local LLM), so keeping it loaded is
+# free speed; on single-GPU Windows boxes unloading frees ~3 GB for Gemma.
+WHISPER_KEEP_LOADED_DEFAULT = env(
+    "VINICUT_WHISPER_KEEP_LOADED", "1" if sys.platform == "darwin" else "0"
+)
 
 # ---------------------------------------------------------------------------
 # Logging

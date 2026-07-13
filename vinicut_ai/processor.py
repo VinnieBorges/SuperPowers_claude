@@ -377,7 +377,7 @@ def run_audio_transcription(video_path):
     # single GPU the two together are the classic cause of Ollama OOM crashes.
     # Set whisper_keep_loaded=1 to trade VRAM for faster back-to-back
     # transcriptions (multi-GPU or CPU-whisper setups).
-    keep_loaded = str(database.get_setting("whisper_keep_loaded", "0")).strip().lower() in ("1", "true", "yes", "on")
+    keep_loaded = str(database.get_setting("whisper_keep_loaded", config.WHISPER_KEEP_LOADED_DEFAULT)).strip().lower() in ("1", "true", "yes", "on")
     del model
     if not keep_loaded:
         with _whisper_lock:

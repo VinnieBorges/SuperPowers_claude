@@ -113,6 +113,25 @@ if [ ! -f ".env" ] && [ -f ".env.example" ]; then
 fi
 
 # ----------------------------------------------------------------
+# Modelo de IA conforme a memoria unificada do Mac:
+#   >= 36 GB (M-series Pro/Max/Ultra grandes) -> gemma4:26b (melhor qualidade)
+#   caso contrario                            -> gemma4:12b (equilibrio)
+# ----------------------------------------------------------------
+MEM_GB=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1073741824 ))
+if [ "$MEM_GB" -ge 36 ]; then
+    AI_MODEL="gemma4:26b"
+    echo "      ${MEM_GB} GB de memoria unificada detectados - usando o modelo maior (${AI_MODEL})."
+else
+    AI_MODEL="gemma4:12b"
+fi
+# Grava a escolha no .env (o app le na primeira inicializacao).
+if grep -q '^VINICUT_OLLAMA_EDIT_MODEL=' .env 2>/dev/null; then
+    sed -i '' "s|^VINICUT_OLLAMA_EDIT_MODEL=.*|VINICUT_OLLAMA_EDIT_MODEL=${AI_MODEL}|" .env
+else
+    echo "VINICUT_OLLAMA_EDIT_MODEL=${AI_MODEL}" >> .env
+fi
+
+# ----------------------------------------------------------------
 # 5) Modelo local de IA (gemma4:12b via Ollama)
 # ----------------------------------------------------------------
 if [ "$STATUS_OLLAMA" = "OK" ]; then
@@ -121,15 +140,15 @@ if [ "$STATUS_OLLAMA" = "OK" ]; then
         (ollama serve >/dev/null 2>&1 &)
         sleep 3
     fi
-    if ollama list 2>/dev/null | grep -qi "gemma4:12b"; then
-        echo "[5/6] Modelo gemma4:12b ja baixado."
+    if ollama list 2>/dev/null | grep -qi "$AI_MODEL"; then
+        echo "[5/6] Modelo $AI_MODEL ja baixado."
         STATUS_GEMMA="OK"
     else
-        echo "[5/6] Baixando o modelo local de IA gemma4:12b (~8 GB, pode demorar)..."
-        if ollama pull gemma4:12b; then
+        echo "[5/6] Baixando o modelo local de IA $AI_MODEL (pode demorar)..."
+        if ollama pull "$AI_MODEL"; then
             STATUS_GEMMA="OK"
         else
-            echo "      [AVISO] Download falhou. Rode depois:  ollama pull gemma4:12b"
+            echo "      [AVISO] Download falhou. Rode depois:  ollama pull $AI_MODEL"
         fi
     fi
 else
@@ -164,7 +183,7 @@ echo "  Python .............. $STATUS_PYTHON"
 echo "  FFmpeg .............. $STATUS_FFMPEG"
 echo "  Ollama .............. $STATUS_OLLAMA"
 echo "  Dependencias ........ $STATUS_DEPS"
-echo "  Modelo IA (gemma) ... $STATUS_GEMMA"
+echo "  Modelo IA (${AI_MODEL:-gemma}) ... $STATUS_GEMMA"
 echo "  Modelo Whisper ...... $STATUS_WHISPER"
 echo "===================================================="
 if [ "$STATUS_PYTHON" = "OK" ] && [ "$STATUS_FFMPEG" = "OK" ] && [ "$STATUS_OLLAMA" = "OK" ] && \

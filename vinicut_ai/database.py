@@ -234,8 +234,9 @@ def init_db():
         # beats auto-detect on noisy audio. Editable in Settings.
         ("whisper_language", "pt"),
         # 0 = release Whisper's VRAM after each transcription so the local
-        # Gemma model has room on single-GPU machines.
-        ("whisper_keep_loaded", "0"),
+        # Gemma model has room on single-GPU machines (1 on Apple Silicon,
+        # where memory is unified).
+        ("whisper_keep_loaded", config.WHISPER_KEEP_LOADED_DEFAULT),
         # Durations rendered for each AI variation. The full matrix
         # ("5,15,30,60") costs up to 24 encodes per project.
         ("variation_durations", "15,30"),

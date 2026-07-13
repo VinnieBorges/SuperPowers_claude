@@ -92,9 +92,12 @@ if ! pgrep -x ollama >/dev/null 2>&1; then
     (ollama serve >/dev/null 2>&1 &)
     sleep 3
 fi
-if ! ollama list 2>/dev/null | grep -qi "gemma4:12b"; then
-    echo "[Setup] Baixando o modelo local de IA gemma4:12b (~8 GB, so na 1a vez)..."
-    ollama pull gemma4:12b || echo "[AVISO] Nao consegui baixar agora. Rode depois: ollama pull gemma4:12b"
+# O modelo configurado no .env (o instalador escolhe pelo tamanho da memoria).
+AI_MODEL=$(grep -E '^VINICUT_OLLAMA_EDIT_MODEL=' .env 2>/dev/null | head -1 | cut -d= -f2)
+AI_MODEL=${AI_MODEL:-gemma4:12b}
+if ! ollama list 2>/dev/null | grep -qi "$AI_MODEL"; then
+    echo "[Setup] Baixando o modelo local de IA $AI_MODEL (so na 1a vez)..."
+    ollama pull "$AI_MODEL" || echo "[AVISO] Nao consegui baixar agora. Rode depois: ollama pull $AI_MODEL"
 fi
 
 # ----------------------------------------------------------------
