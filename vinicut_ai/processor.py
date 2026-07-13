@@ -3,6 +3,7 @@ import gc
 import json
 import requests
 import subprocess
+import sys
 import tempfile
 import time
 from database import get_system_prompt, get_db_connection, log_subtitle_correction
@@ -78,7 +79,8 @@ def unload_ollama_model(model_name):
         # Reclaim PyTorch/CUDA cache if torch is imported
         if torch is not None:
             gc.collect()
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         # Allow Windows WDDM driver to reclaim VRAM
         time.sleep(3.0)
     except Exception as e:
@@ -252,7 +254,11 @@ def _load_whisper_locked(model_name):
         return _cached_whisper_model
 
     log.info("[Whisper] Loading model '%s' into memory...", model_name)
-    if not _whisper_force_cpu:
+    if sys.platform == "darwin":
+        # Apple Silicon: CTranslate2 has no CUDA/MPS path — CPU int8 uses the
+        # Accelerate framework and is the right mode on M-series.
+        pass
+    elif not _whisper_force_cpu:
         try:
             # int8_float16 optimizes RAM/VRAM footprint while keeping GPU acceleration
             _cached_whisper_model = WhisperModel(model_name, device="cuda", compute_type="int8_float16")
@@ -362,7 +368,8 @@ def run_audio_transcription(video_path):
             _cached_whisper_model_name = None
             if torch is not None:
                 gc.collect()
-                torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             model = _load_whisper_locked(whisper_model)
         grouped_segments = _transcribe_grouped(model, video_path, language, whisper_prompt)
 
@@ -379,7 +386,8 @@ def run_audio_transcription(video_path):
         log.info("[Whisper] Model unloaded from VRAM (freeing space for the local LLM).")
     if torch is not None:
         gc.collect()
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     return grouped_segments
 

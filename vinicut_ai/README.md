@@ -149,7 +149,23 @@ workspace and never touch your real database or media.
 3. **Verify** anytime with `run.bat test` (self-test suite).
    `install.bat` remains available as a verbose first-time installer.
 
-Linux/macOS: install FFmpeg + Ollama yourself, then
+## Quick start (macOS — Apple Silicon M1 or newer)
+
+1. Install [Homebrew](https://brew.sh) if you don't have it.
+2. In Terminal, inside the project folder:
+   ```bash
+   chmod +x run.sh && ./run.sh
+   ```
+   Like the Windows launcher, it self-heals on every run: installs Python,
+   FFmpeg and Ollama via Homebrew, the Python dependencies, pulls
+   `gemma4:12b` (Ollama uses the M-series GPU via Metal) and the Whisper
+   model, then opens the app. `./run.sh test` runs the self-test suite.
+
+Video encoding uses Apple's **VideoToolbox** hardware encoder (the M-series
+media engine) with automatic CPU fallback; Whisper runs on CPU int8 via the
+Accelerate framework. Intel Macs are not supported.
+
+Linux: install FFmpeg + Ollama yourself, then
 `pip install -r requirements.txt && python main.py`.
 
 ## How the pipeline works

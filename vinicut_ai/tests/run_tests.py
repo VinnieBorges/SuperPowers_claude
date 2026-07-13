@@ -327,6 +327,49 @@ def t_ollama_model_listing_and_timeout_hint():
             assert "returned nothing" in str(e) and "NUM_CTX" in str(e), e
 
 
+def t_macos_videotoolbox_flags():
+    """On Apple Silicon the HW encoder is VideoToolbox; CPU translation and the
+    failure memo must handle it exactly like NVENC."""
+    from unittest import mock
+
+    prev = render_engine.IS_MACOS
+    try:
+        render_engine.IS_MACOS = True
+        flags = render_engine.encode_args()
+        assert "h264_videotoolbox" in flags and "-q:v" in flags
+        assert "-rc" not in flags and "h264_nvenc" not in flags
+        render_engine.IS_MACOS = False
+        flags = render_engine.encode_args()
+        assert "h264_nvenc" in flags and "h264_videotoolbox" not in flags
+    finally:
+        render_engine.IS_MACOS = prev
+
+    # VideoToolbox -> libx264 translation.
+    vt_args = ["ffmpeg", "-i", "in.mp4", "-c:v", "h264_videotoolbox", "-q:v", "58",
+               "-pix_fmt", "yuv420p", "-y", "out.mp4"]
+    cpu = render_engine._to_cpu_args(vt_args)
+    assert "libx264" in cpu and "-crf" in cpu
+    assert "h264_videotoolbox" not in cpu and "-q:v" not in cpu
+
+    # The failure memo triggers for VideoToolbox too.
+    calls = []
+    def fake_run(args, progress_callback=None, duration=None):
+        calls.append(list(args))
+        import subprocess
+        rc = 1 if "h264_videotoolbox" in args else 0
+        return subprocess.CompletedProcess(args, rc, "", "vt says no" if rc else "")
+    prev_state = dict(render_engine._nvenc_state)
+    try:
+        render_engine._nvenc_state["broken"] = False
+        with mock.patch.object(render_engine, "_run_process", side_effect=fake_run):
+            render_engine.run_command(list(vt_args), desc="vt1", check=False)
+            render_engine.run_command(list(vt_args), desc="vt2", check=False)
+    finally:
+        render_engine._nvenc_state.update(prev_state)
+    assert len(calls) == 3
+    assert "libx264" in calls[1] and "libx264" in calls[2]
+
+
 def t_nvenc_failure_memo():
     """After the first NVENC failure, encodes go straight to CPU args."""
     from unittest import mock
@@ -857,6 +900,7 @@ def main():
     check("silence jump-cut slice splitting", t_silence_split_logic)
     check("loudnorm audio chain append", t_loudnorm_append)
     check("ollama model listing + timeout hint + keep_alive", t_ollama_model_listing_and_timeout_hint)
+    check("macOS VideoToolbox flags + translation + memo", t_macos_videotoolbox_flags)
     check("NVENC failure memoization (straight to CPU)", t_nvenc_failure_memo)
     check("variation durations setting parser", t_variation_durations_setting)
     check("CUDA library error classifier (whisper CPU fallback)", t_cuda_lib_error_classifier)

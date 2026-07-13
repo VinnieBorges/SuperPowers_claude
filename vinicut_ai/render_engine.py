@@ -1,12 +1,15 @@
 import os
 import re
 import subprocess
+import sys
 import threading
 
 import config
 from config import get_logger
 
 log = get_logger("render_engine")
+
+IS_MACOS = sys.platform == "darwin"
 
 try:
     import winreg
@@ -123,8 +126,12 @@ def _run_process(args, progress_callback=None, duration=None):
     return subprocess.CompletedProcess(args, p.returncode, stdout, stderr)
 
 
+HW_ENCODERS = ("h264_nvenc", "h264_videotoolbox")
+
+
 def _to_cpu_args(args):
-    """Translates an NVENC command line to its libx264 equivalent."""
+    """Translates a hardware-encoder command line (NVENC on Windows/Linux,
+    VideoToolbox on macOS) to its libx264 equivalent."""
     cpu_args = []
     skip_next = False
     for idx, val in enumerate(args):
@@ -132,7 +139,7 @@ def _to_cpu_args(args):
             skip_next = False
             continue
         nxt = args[idx + 1] if idx + 1 < len(args) else None
-        if val == "h264_nvenc":
+        if val in HW_ENCODERS:
             cpu_args.append("libx264")
         elif val == "-preset" and nxt in ("p1", "p2", "p3", "p4", "p5", "p6", "p7"):
             cpu_args += ["-preset", "medium"]
@@ -140,6 +147,9 @@ def _to_cpu_args(args):
         elif val == "-rc":                       # NVENC rate-control mode
             skip_next = True
         elif val == "-cq":                       # NVENC quality -> x264 CRF
+            cpu_args += ["-crf", "21"]
+            skip_next = True
+        elif val == "-q:v":                      # VideoToolbox quality -> x264 CRF
             cpu_args += ["-crf", "21"]
             skip_next = True
         elif val == "-b:v" and nxt == "0":       # "let CQ drive it" is NVENC-only
@@ -151,9 +161,13 @@ def _to_cpu_args(args):
     return cpu_args
 
 
-# Once NVENC fails on this machine it will fail every time; remember it so the
-# remaining ~30 encodes per project skip the doomed attempt (and its 1-3s cost)
-# and go straight to CPU.
+def _has_hw_encoder(args):
+    return any(enc in args for enc in HW_ENCODERS)
+
+
+# Once the hardware encoder fails on this machine it will fail every time;
+# remember it so the remaining ~30 encodes per project skip the doomed attempt
+# (and its 1-3s cost) and go straight to CPU.
 _nvenc_state = {"broken": False}
 
 
@@ -163,21 +177,21 @@ def run_command(args, desc="ffmpeg", check=True, progress_callback=None, duratio
     paths containing spaces or shell metacharacters (%, &, (), !, ...) are
     passed literally and can never be reinterpreted by the shell.
 
-    If the command uses h264_nvenc hardware acceleration and fails, we
-    automatically fall back to CPU-based libx264 encoding — and remember the
-    failure so subsequent encodes skip the NVENC attempt entirely.
+    If the command uses hardware acceleration (NVENC / VideoToolbox) and fails,
+    we automatically fall back to CPU-based libx264 encoding — and remember the
+    failure so subsequent encodes skip the hardware attempt entirely.
     """
-    if "h264_nvenc" in args and _nvenc_state["broken"]:
+    if _has_hw_encoder(args) and _nvenc_state["broken"]:
         args = _to_cpu_args(args)
         desc = f"{desc} (CPU)"
 
     result = _run_process(args, progress_callback, duration)
 
-    if result.returncode != 0 and "h264_nvenc" in args:
+    if result.returncode != 0 and _has_hw_encoder(args):
         if not _nvenc_state["broken"]:
             _nvenc_state["broken"] = True
-            log.warning("NVENC unavailable on this machine — using CPU (libx264) "
-                        "for all renders this session. First failure: '%s'.", desc)
+            log.warning("Hardware encoder unavailable on this machine — using CPU "
+                        "(libx264) for all renders this session. First failure: '%s'.", desc)
         result = _run_process(_to_cpu_args(args), progress_callback, duration)
         desc = f"{desc} (CPU fallback)"
 
@@ -658,7 +672,7 @@ def render_subtitles(video_path, ass_path, output_path, progress_callback=None, 
         args = [
             FFMPEG_BIN, "-i", video_path,
             "-vf", vf,
-            "-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "23", "-b:v", "0",
+        ] + hw_video_flags() + [
             "-pix_fmt", "yuv420p",
             # The raw cut's audio is already mastered — pass it through untouched.
             "-c:a", "copy",
@@ -776,10 +790,14 @@ def framing_filter_parts(idx, start, end, mode, zoom=False, in_label="[0:v]"):
         return [f"{base},scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=decrease,"
                 f"pad={OUT_W}:{OUT_H}:(ow-iw)/2:(oh-ih)/2:black{z},setsar=1[v{idx}]"]
     if mode == "fit_blur":
+        # Blur at quarter resolution then upscale: visually identical for a
+        # heavy blur, ~16x cheaper than gblur at full 1080x1920 (gblur is one
+        # of FFmpeg's slowest filters and this runs per frame per cut).
         return [
             f"{base},split=2[fbg{idx}][ffg{idx}]",
-            f"[fbg{idx}]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,"
-            f"crop={OUT_W}:{OUT_H},gblur=sigma=26,eq=brightness=-0.06[fbb{idx}]",
+            f"[fbg{idx}]scale={OUT_W // 4}:{OUT_H // 4}:force_original_aspect_ratio=increase,"
+            f"crop={OUT_W // 4}:{OUT_H // 4},gblur=sigma=7,eq=brightness=-0.06,"
+            f"scale={OUT_W}:{OUT_H}[fbb{idx}]",
             f"[ffg{idx}]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=decrease[ffs{idx}]",
             f"[fbb{idx}][ffs{idx}]overlay=(W-w)/2:(H-h)/2{z},setsar=1[v{idx}]",
         ]
@@ -796,8 +814,9 @@ def framing_single_parts(mode, in_label="[0:v]", out_label="[v_scale]"):
     if mode == "fit_blur":
         return [
             f"{in_label}split=2[fsbg][fsfg]",
-            f"[fsbg]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,"
-            f"crop={OUT_W}:{OUT_H},gblur=sigma=26,eq=brightness=-0.06[fsbb]",
+            f"[fsbg]scale={OUT_W // 4}:{OUT_H // 4}:force_original_aspect_ratio=increase,"
+            f"crop={OUT_W // 4}:{OUT_H // 4},gblur=sigma=7,eq=brightness=-0.06,"
+            f"scale={OUT_W}:{OUT_H}[fsbb]",
             f"[fsfg]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=decrease[fsff]",
             f"[fsbb][fsff]overlay=(W-w)/2:(H-h)/2,setsar=1{out_label}",
         ]
@@ -1077,15 +1096,25 @@ def shift_subtitles_for_slices(subtitle_segments, slices, use_xfade=False, trans
     return shifted
 
 
+def hw_video_flags():
+    """
+    Platform hardware encoder: VideoToolbox on macOS (Apple Silicon media
+    engine), NVENC elsewhere. Both are translated to libx264 CRF by the CPU
+    fallback when unavailable.
+    """
+    if IS_MACOS:
+        return ["-c:v", "h264_videotoolbox", "-q:v", "58"]
+    return ["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "23", "-b:v", "0"]
+
+
 def encode_args():
     """
-    Shared output encode settings for every deliverable: NVENC quality-mode
+    Shared output encode settings for every deliverable: hardware quality-mode
     rate control (translated to libx264 CRF by the CPU fallback), guaranteed
     yuv420p at constant 30 fps (phone sources are often VFR), 48 kHz AAC, and
     faststart for instant social/browser playback.
     """
-    return [
-        "-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "23", "-b:v", "0",
+    return hw_video_flags() + [
         "-pix_fmt", "yuv420p", "-r", "30",
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
     ] + MP4_FLAGS + ["-y"]
