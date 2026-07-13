@@ -151,15 +151,18 @@ workspace and never touch your real database or media.
 
 ## Quick start (macOS — Apple Silicon M1 or newer)
 
-1. Install [Homebrew](https://brew.sh) if you don't have it.
-2. In Terminal, inside the project folder:
+1. **Install once** — in Terminal, inside the project folder:
    ```bash
-   chmod +x run.sh && ./run.sh
+   chmod +x install.sh run.sh && ./install.sh
    ```
-   Like the Windows launcher, it self-heals on every run: installs Python,
-   FFmpeg and Ollama via Homebrew, the Python dependencies, pulls
-   `gemma4:12b` (Ollama uses the M-series GPU via Metal) and the Whisper
-   model, then opens the app. `./run.sh test` runs the self-test suite.
+   The installer checks every component and downloads whatever is missing:
+   Homebrew (offers to install it), Python, FFmpeg, **Ollama**, the Python
+   dependencies, the **local AI model** (`gemma4:12b`, ~8 GB — Ollama uses
+   the M-series GPU via Metal) and the Whisper model (~3 GB). It warns on
+   low disk space and ends with an OK/FALTA summary; re-running continues
+   from where it stopped.
+2. **Daily use** — `./run.sh` (also self-heals on every launch).
+   `./run.sh test` runs the self-test suite.
 
 Video encoding uses Apple's **VideoToolbox** hardware encoder (the M-series
 media engine) with automatic CPU fallback; Whisper runs on CPU int8 via the
