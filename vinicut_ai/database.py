@@ -240,6 +240,8 @@ def init_db():
         # Durations rendered for each AI variation. The full matrix
         # ("5,15,30,60") costs up to 24 encodes per project.
         ("variation_durations", "15,30"),
+        # Which standard cuts get rendered per project (subset of 5,15,20,30,60).
+        ("cut_durations", "5,15,30,60"),
     ]
     for key, val in default_settings:
         cursor.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)", (key, val))

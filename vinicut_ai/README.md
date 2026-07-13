@@ -1,7 +1,8 @@
 # Vinicut AI — Auto Cutter 🎬
 
 AI-powered short-form video factory: drop raw UGC footage in, get retention-optimized
-5s / 15s / 30s / 60s vertical cuts out — transcribed, semantically segmented into
+vertical cuts out in the lengths you pick (any mix of 5s / 15s / 20s / 30s / 60s,
+chosen in Settings → Style) — transcribed, semantically segmented into
 **Hook / Demo / CTA**, re-ordered into montage variations, and burned with karaoke-style
 captions. Now with a **Claude-powered editorial brain**.
 
@@ -183,7 +184,7 @@ upload / watch-folder drop
  1. faster-whisper  → word-level transcript (grouped ≤3 words / 1.5s for captions)
  2. Claude/Ollama   → Hook/Demo/CTA boundaries + best source ranges per duration
                       + creative montage variations           (ai_editor.py)
- 3. FFmpeg          → word-snapped semantic cuts (5/15/30/60s, raw + subbed,
+ 3. FFmpeg          → word-snapped semantic cuts (your 5/15/20/30/60s picks, raw + subbed,
                       9:16 1080×1920, NVENC w/ CPU fallback, xfade transitions,
                       karaoke ASS captions, retention zoom, music ducking)
         │

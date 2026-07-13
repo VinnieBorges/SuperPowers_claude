@@ -410,6 +410,41 @@ def t_variation_durations_setting():
     database.update_setting("variation_durations", "15,30")
 
 
+def t_cut_durations_setting_parser():
+    """The Settings 'Cut lengths' selection round-trips through the parser."""
+    prev = database.get_setting("cut_durations", "5,15,30,60")
+    try:
+        database.update_setting("cut_durations", "5,20,30")
+        assert processor.standard_cut_durations() == [5, 20, 30]
+        # Spaces, semicolons, duplicates and junk tokens are tolerated;
+        # the result is always sorted ascending.
+        database.update_setting("cut_durations", "60, 20; banana, 20, 5")
+        assert processor.standard_cut_durations() == [5, 20, 60]
+        # Values outside the allowed set (5/15/20/30/60) are dropped.
+        database.update_setting("cut_durations", "7,45,90")
+        assert processor.standard_cut_durations() == list(config.STANDARD_CUT_DURATIONS)
+        database.update_setting("cut_durations", "garbage")
+        assert processor.standard_cut_durations() == list(config.STANDARD_CUT_DURATIONS)
+    finally:
+        database.update_setting("cut_durations", prev)
+
+
+def t_custom_durations_fallback_and_sanitizer():
+    """Fallback plans and the AI sanitizer honor a custom duration selection."""
+    plan = ai_editor.get_fallback_segmentation(45.0, durations=[5, 20, 30])
+    assert set(plan["standard_cuts"]) == {"5s", "20s", "30s"}
+    for key, slices in plan["standard_cuts"].items():
+        for s, e in slices:
+            assert 0.0 <= s < e <= 45.0 + 1e-6, (key, s, e)
+    combined = sum(e - s for s, e in plan["standard_cuts"]["20s"])
+    assert combined <= 20.0 + 1e-6, combined
+    # The sanitizer accepts a 20s key when 20 is selected and ignores
+    # durations the user deselected.
+    data = {"standard_cuts": {"20s": [[0, 6], [10, 20]], "15s": [[0, 12]]}}
+    clean = ai_editor._sanitize_standard_cuts(data, 60.0, durations=[20])
+    assert "20s" in clean and "15s" not in clean, clean
+
+
 def t_cuda_lib_error_classifier():
     assert processor._is_cuda_lib_error("Library cublas64_12.dll is not found or cannot be loaded")
     assert processor._is_cuda_lib_error("Could not load library libcudnn_ops_infer.so.8")
@@ -683,6 +718,37 @@ def t_framing_modes_render():
         assert (w, h) == (1080, 1920), f"{fr_mode}: got {w}x{h}"
 
 
+def t_render_20s_custom_duration():
+    """A selected 20s cut renders end-to-end (raw + subtitled) at 1080x1920,
+    and deselected durations are NOT rendered."""
+    require_ffmpeg()
+    src = FIXTURES["landscape"]
+    filename = "twenty_src.mp4"
+    dest = os.path.join(database.RAW_DIR, filename)
+    shutil.copy2(src, dest)
+    pid = insert_project(filename)
+    total = render_engine.get_video_duration(dest)
+    plan = ai_editor.get_fallback_segmentation(total, durations=[20])
+    smap = {"hook": plan["hook"], "demo": plan["demo"], "cta": plan["cta"],
+            "standard_cuts": plan["standard_cuts"]}
+    cut_paths = processor.render_final_cuts(
+        project_id=pid, filename=filename, original_video_path=dest,
+        segments=fake_transcript(total), style_preset="Bold Yellow",
+        segments_map=smap, order=["Hook", "Demo", "CTA"],
+        durations=[20],
+    )
+    raw, sub = cut_paths.get("20s_raw"), cut_paths.get(20)
+    assert raw and sub, f"20s cut missing: {sorted(map(str, cut_paths))}"
+    for other in (5, 15, 30, 60):
+        assert other not in cut_paths and f"{other}s_raw" not in cut_paths, \
+            f"deselected {other}s was rendered: {sorted(map(str, cut_paths))}"
+    d_raw = assert_playable(raw)
+    assert d_raw <= min(20 + 3.0, total + 1.0), d_raw
+    assert_playable(sub)
+    w, h = render_engine.get_video_dimensions(sub)
+    assert (w, h) == (1080, 1920), f"20s cut got {w}x{h}"
+
+
 def t_thumbnails_and_waveform_helpers():
     require_ffmpeg()
     thumb = render_engine.generate_thumbnail(FIXTURES["tiny"])
@@ -903,6 +969,8 @@ def main():
     check("macOS VideoToolbox flags + translation + memo", t_macos_videotoolbox_flags)
     check("NVENC failure memoization (straight to CPU)", t_nvenc_failure_memo)
     check("variation durations setting parser", t_variation_durations_setting)
+    check("cut lengths setting parser (5/15/20/30/60 subset)", t_cut_durations_setting_parser)
+    check("custom durations: fallback plan + AI sanitizer", t_custom_durations_fallback_and_sanitizer)
     check("CUDA library error classifier (whisper CPU fallback)", t_cuda_lib_error_classifier)
     check("staged local analysis (Gemma path) + per-stage fallback", t_staged_local_analysis)
     check("hook score sanitizer + PT reason passthrough", t_hook_score_sanitizer)
@@ -924,6 +992,7 @@ def main():
     check("filename with apostrophe/&/unicode -> all cuts", t_render_hostile_filename)
     check("AI variation reorder (CTA-Hook-Demo, xfade, subs)", t_render_ai_variation_reorder)
     check("framing modes render true 1080x1920 from wide source", t_framing_modes_render)
+    check("20s custom duration renders end-to-end (others skipped)", t_render_20s_custom_duration)
     check("poster thumbnail generation", t_thumbnails_and_waveform_helpers)
     check("API: waveform / retry / delete endpoints", t_api_endpoints)
     check("no long DB write locks during render (upload starvation)", t_no_long_write_locks_during_render)

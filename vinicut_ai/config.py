@@ -85,7 +85,10 @@ AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg"}
 FONT_EXTENSIONS = {".ttf", ".otf"}
 OUTPUT_WIDTH = env_int("VINICUT_OUTPUT_WIDTH", 1080)
 OUTPUT_HEIGHT = env_int("VINICUT_OUTPUT_HEIGHT", 1920)
+# Default set rendered per project; the `cut_durations` setting (UI picker)
+# selects any subset of ALLOWED_CUT_DURATIONS.
 STANDARD_CUT_DURATIONS = (5, 15, 30, 60)
+ALLOWED_CUT_DURATIONS = (5, 15, 20, 30, 60)
 
 # Days a completed project's raw upload is kept before the janitor removes it.
 RAW_RETENTION_DAYS = env_int("VINICUT_RAW_RETENTION_DAYS", 7)

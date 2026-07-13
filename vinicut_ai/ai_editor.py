@@ -111,7 +111,7 @@ def _sanitize_boundaries(data, total_dur):
     }
 
 
-def _sanitize_standard_cuts(data, total_dur):
+def _sanitize_standard_cuts(data, total_dur, durations=None):
     """
     Validates the per-duration slice lists. Each entry must be a list of
     non-overlapping, chronological [start, end] source ranges whose combined
@@ -120,7 +120,7 @@ def _sanitize_standard_cuts(data, total_dur):
     """
     result = {}
     raw = data.get("standard_cuts") if isinstance(data.get("standard_cuts"), dict) else {}
-    for dur in STANDARD_DURATIONS:
+    for dur in (durations or STANDARD_DURATIONS):
         key = f"{dur}s"
         slices = []
         for item in raw.get(key, []) or []:
@@ -177,7 +177,7 @@ def _sanitize_variations(data):
 # Public API
 # ---------------------------------------------------------------------------
 
-def get_fallback_segmentation(total_dur):
+def get_fallback_segmentation(total_dur, durations=None):
     """
     Deterministic segmentation used when AI analysis is unavailable: hook is
     the first ~15% (max 5s), CTA the last ~15% (max 5s), demo the middle.
@@ -188,7 +188,7 @@ def get_fallback_segmentation(total_dur):
     cta_start = max(hook_end + 0.5, total_dur - min(5.0, max(1.5, total_dur * 0.15)))
 
     standard_cuts = {}
-    for dur in STANDARD_DURATIONS:
+    for dur in (durations or STANDARD_DURATIONS):
         if total_dur <= dur:
             standard_cuts[f"{dur}s"] = [[0.0, total_dur]]
             continue
@@ -215,7 +215,7 @@ def get_fallback_segmentation(total_dur):
     }
 
 
-def analyze_transcript_and_segment(transcription, total_dur):
+def analyze_transcript_and_segment(transcription, total_dur, durations=None):
     """
     Runs the full editorial analysis over the transcript. Returns:
 
@@ -223,22 +223,24 @@ def analyze_transcript_and_segment(transcription, total_dur):
           "hook": [start, end],
           "demo": [start, end],
           "cta":  [start, end],
-          "standard_cuts": {"5s": [[s,e],...], "15s": ..., "30s": ..., "60s": ...},
-          "variations": [{"name", "description", "order"}, ...]
+          "standard_cuts": {"<dur>s": [[s,e],...] for each configured duration},
+          "variations": [{"name", "description", "order", "score"}, ...]
         }
 
+    `durations` selects the target cut lengths (defaults to 5/15/30/60).
     Raises nothing on model failure — callers get the deterministic fallback.
     """
     total_dur = max(3.0, _num(total_dur, 30.0))
+    durations = list(durations) if durations else list(STANDARD_DURATIONS)
     transcript_text = _fmt_transcript(transcription)
     if not transcript_text.strip():
         log.info("Empty transcript; using fallback segmentation.")
-        return get_fallback_segmentation(total_dur)
+        return get_fallback_segmentation(total_dur, durations)
 
     # Local models (Gemma via Ollama — the primary engine) do far better on
     # three small, focused questions than on one giant nested-JSON request.
     if llm.active_provider() == "ollama":
-        return _analyze_staged_local(transcription, total_dur)
+        return _analyze_staged_local(transcription, total_dur, durations)
 
     prompt = f"""Analyze this UGC ad transcript. The video is {total_dur:.2f} seconds long.
 
@@ -251,11 +253,11 @@ Tasks:
    - demo: the product demonstration / proof / benefits
    - cta: the closing call to action
    The three parts must be contiguous and cover 0 to {total_dur:.2f}.
-2. For each target duration (5s, 15s, 30s, 60s), pick the EXACT source time
-   ranges that make the most persuasive cut of that length. Prefer complete
-   sentences, keep chronological order, and make combined range lengths land
-   close to the target. Always include some hook material first and CTA
-   material last (except 5s, which is hook-only).
+2. For each target duration ({", ".join(f"{d}s" for d in durations)}), pick the
+   EXACT source time ranges that make the most persuasive cut of that length.
+   Prefer complete sentences, keep chronological order, and make combined range
+   lengths land close to the target. Always include some hook material first
+   and CTA material last (except 5s, which is hook-only).
 3. Propose 3 creative montage variations that re-order the parts (using only
    "Hook", "Demo", "CTA") with a short marketing rationale for each, plus an
    honest retention/virality score from 0-100 (how likely this structure is to
@@ -270,10 +272,9 @@ Return ONLY this JSON shape (numbers in seconds):
   "demo": [4.2, 21.7],
   "cta": [21.7, {total_dur:.2f}],
   "standard_cuts": {{
-    "5s": [[0.0, 4.8]],
-    "15s": [[0.0, 4.2], [8.5, 15.1], [21.7, {total_dur:.2f}]],
-    "30s": [[0.0, 4.2], [4.2, 20.0], [21.7, {total_dur:.2f}]],
-    "60s": [[0.0, {total_dur:.2f}]]
+    "{durations[0]}s": [[0.0, 4.8]],
+    "{durations[-1]}s": [[0.0, 4.2], [8.5, 15.1], [21.7, {total_dur:.2f}]]
+    // ...one entry per target duration: {", ".join(f'"{d}s"' for d in durations)}
   }},
   "variations": [
     {{"name": "Curiosity Loop", "description": "Why it works.", "order": ["CTA", "Hook", "Demo"], "score": 78}}
@@ -284,16 +285,16 @@ Return ONLY this JSON shape (numbers in seconds):
         data = llm.chat_json(prompt, system=_SYSTEM_PROMPT)
     except Exception as e:
         log.warning("AI segmentation failed (%s); using fallback plan.", e)
-        return get_fallback_segmentation(total_dur)
+        return get_fallback_segmentation(total_dur, durations)
 
     if not isinstance(data, dict):
         log.warning("AI segmentation returned non-object JSON; using fallback plan.")
-        return get_fallback_segmentation(total_dur)
+        return get_fallback_segmentation(total_dur, durations)
 
     boundaries = _sanitize_boundaries(data, total_dur)
     result = {
         **boundaries,
-        "standard_cuts": _sanitize_standard_cuts(data, total_dur),
+        "standard_cuts": _sanitize_standard_cuts(data, total_dur, durations),
         "variations": _sanitize_variations(data),
     }
     log.info(
@@ -304,14 +305,15 @@ Return ONLY this JSON shape (numbers in seconds):
     return result
 
 
-def _analyze_staged_local(transcription, total_dur):
+def _analyze_staged_local(transcription, total_dur, durations=None):
     """
     Gemma-friendly analysis: three small calls instead of one giant one, each
     with an independent fallback. A 12B answering one narrow question with a
     flat JSON shape is dramatically more reliable than the combined request,
     and a single bad stage no longer throws away the whole plan.
     """
-    fallback = get_fallback_segmentation(total_dur)
+    durations = list(durations) if durations else list(STANDARD_DURATIONS)
+    fallback = get_fallback_segmentation(total_dur, durations)
     # Smaller transcript budget: fits comfortably in the local context window
     # with room for the answer, and keeps generation fast.
     transcript_text = _fmt_transcript(transcription, max_chars=3500)
@@ -346,15 +348,16 @@ Return ONLY JSON: {{"hook": [0.0, 4.2], "demo": [4.2, 21.7], "cta": [21.7, {tota
 
 {transcript_text}
 
-For each target duration, pick the EXACT source time ranges (chronological,
-complete sentences, combined length close to the target; hook material first
-and CTA material last, except 5s which is hook-only).
+For each target duration ({', '.join(f'{d}s' for d in durations)}), pick the
+EXACT source time ranges (chronological, complete sentences, combined length
+close to the target; hook material first and CTA material last, except 5s
+which is hook-only).
 
-Return ONLY JSON like:
-{{"5s": [[0.0, 4.8]], "15s": [[0.0, 4.2], [8.5, 15.1]], "30s": [[0.0, 4.2], [4.2, 20.0], [21.7, {total_dur:.2f}]], "60s": [[0.0, {total_dur:.2f}]]}}""",
+Return ONLY JSON with exactly these keys: {', '.join(f'"{d}s"' for d in durations)}
+Example shape: {{"{durations[0]}s": [[0.0, 4.8]], "{durations[-1]}s": [[0.0, 4.2], [8.5, 15.1], [21.7, {total_dur:.2f}]]}}""",
             system=_SYSTEM_PROMPT,
         )
-        standard_cuts = _sanitize_standard_cuts({"standard_cuts": data if isinstance(data, dict) else {}}, total_dur)
+        standard_cuts = _sanitize_standard_cuts({"standard_cuts": data if isinstance(data, dict) else {}}, total_dur, durations)
     except Exception as e:
         log.warning("Local analysis stage 2 (standard cuts) failed (%s); renderer will use its own plan.", e)
 

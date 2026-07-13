@@ -463,19 +463,38 @@ def get_subtitle_animation_settings():
         fade_ms = 150
     return animation, fade_ms
 
-def render_final_cuts(project_id, filename, original_video_path, segments, style_preset, segments_map, order=None, progress_callback=None):
+def standard_cut_durations():
     """
-    Generates ASS, burns subtitles, and cuts the video into 5s, 15s, 30s, 60s cuts.
+    The cut lengths selected in Settings (subset of 5/15/20/30/60), parsed
+    from the `cut_durations` setting with a safe default.
+    """
+    import database
+    raw = database.get_setting("cut_durations", "5,15,30,60") or ""
+    values = []
+    for part in raw.replace(";", ",").split(","):
+        try:
+            val = int(part.strip())
+        except ValueError:
+            continue
+        if val in config.ALLOWED_CUT_DURATIONS and val not in values:
+            values.append(val)
+    return sorted(values) or list(config.STANDARD_CUT_DURATIONS)
+
+
+def render_final_cuts(project_id, filename, original_video_path, segments, style_preset, segments_map, order=None, progress_callback=None, durations=None):
+    """
+    Generates ASS, burns subtitles, and cuts the video into the configured
+    standard lengths (any subset of 5/15/20/30/60s; see standard_cut_durations).
     Generates both subtitled and subtitle-free (raw) versions of all cuts.
     Saves cuts records to database.
     """
     conn = get_db_connection()
     try:
-        return _render_final_cuts_impl(conn, project_id, filename, original_video_path, segments, style_preset, segments_map, order, progress_callback)
+        return _render_final_cuts_impl(conn, project_id, filename, original_video_path, segments, style_preset, segments_map, order, progress_callback, durations)
     finally:
         conn.close()
 
-def _render_final_cuts_impl(conn, project_id, filename, original_video_path, segments, style_preset, segments_map, order=None, progress_callback=None):
+def _render_final_cuts_impl(conn, project_id, filename, original_video_path, segments, style_preset, segments_map, order=None, progress_callback=None, durations=None):
     cursor = conn.cursor()
 
     # Retrieve customized rendering configurations
@@ -512,7 +531,7 @@ def _render_final_cuts_impl(conn, project_id, filename, original_video_path, seg
     # encode of the entire video). Each cut is produced raw first, then captions
     # are shifted onto that short cut's timeline and burned on top of it.
 
-    durations = [5, 15, 30, 60]
+    durations = list(durations) if durations else standard_cut_durations()
     cut_paths = {}
     
     total_steps = len(durations) * 2

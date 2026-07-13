@@ -1295,6 +1295,16 @@ function drawToolsSidebar() {
         <div style="font-size:10.5px;color:var(--text-faint);">How non-vertical footage is placed on the 1080×1920 canvas. Auto crops portrait sources and blur-fits wide ones so nothing important is cut off.</div>
       </div>
       <div class="field">
+        <label class="field-label">Cut lengths</label>
+        <div id="cutDurRow" style="display:flex;gap:14px;flex-wrap:wrap;">
+          ${[5,15,20,30,60].map(d => `
+            <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:12.5px;">
+              <input type="checkbox" class="cd-check" value="${d}" onchange="saveCutDurations()" style="width:auto;margin:0;"/>${d}s
+            </label>`).join('')}
+        </div>
+        <div style="font-size:10.5px;color:var(--text-faint);">Which standard cuts every project renders. Fewer lengths = faster projects. Applies to the next analysis/export.</div>
+      </div>
+      <div class="field">
         <label class="field-label">Preset</label>
         ${selectHtml('st_style', STYLES, p.style_preset)}
       </div>
@@ -1343,6 +1353,10 @@ function drawToolsSidebar() {
         if (tr && s.transition_style) tr.value = s.transition_style;
         const an = $('#st_anim');
         if (an && s.subtitle_animation) an.value = s.subtitle_animation;
+        const chosen = String(s.cut_durations || '5,15,30,60').split(',').map(x=>parseInt(x.trim(),10));
+        document.querySelectorAll('.cd-check').forEach(cb => {
+          cb.checked = chosen.includes(parseInt(cb.value, 10));
+        });
       } catch(e) {}
       const fu = $('#se_font_file');
       if (fu) {
@@ -1588,7 +1602,10 @@ function progressHtml(p){
 
 function outputsHtml(p){
   const cuts=p.cuts||{}, ai=p.ai_montages||[];
-  const std=[['5s','5s — Hook'],['15s','15s — Pitch'],['30s','30s — Ad'],['60s','60s — Full'],['custom','Custom order']];
+  const durLabel={5:'Hook',15:'Pitch',20:'Short ad',30:'Ad',60:'Full'};
+  const durKeys=[...new Set(Object.keys(cuts).map(k=>{const m=k.match(/^(\d+)s(?:_raw)?$/);return m?+m[1]:null;}).filter(d=>d!==null))].sort((a,b)=>a-b);
+  const std=durKeys.map(d=>[d+'s', d+'s'+(durLabel[d]?' — '+durLabel[d]:'')]);
+  std.push(['custom','Custom order']);
 
   let html = '';
   const have = std.filter(([k])=>cuts[k]||cuts[k+'_raw']);
@@ -1916,6 +1933,18 @@ async function doDeleteHook(id){
   } catch(e) {
     toast('Remove failed: ' + e.message, 'err');
   }
+}
+
+async function saveCutDurations(){
+  const vals = [...document.querySelectorAll('.cd-check')].filter(cb=>cb.checked).map(cb=>cb.value);
+  if (!vals.length) { toast('Keep at least one cut length selected.', 'err');
+    document.querySelectorAll('.cd-check').forEach(cb=>{ if(cb.value==='15') cb.checked=true; });
+    vals.push('15');
+  }
+  try {
+    await API.saveSettings({ cut_durations: vals.join(',') });
+    toast(`Cut lengths: ${vals.join('s, ')}s.`, 'ok');
+  } catch(e) { toast('Failed to save cut lengths: ' + e.message, 'err'); }
 }
 
 async function genMarketing(btn){

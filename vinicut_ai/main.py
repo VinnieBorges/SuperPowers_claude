@@ -341,11 +341,12 @@ def sequential_queue_worker():
             t_transcribed = time.time()
 
             # Step 2: AI editorial analysis (Claude / Ollama via llm.py)
+            cut_durs = processor.standard_cut_durations()
             try:
-                ai_data = ai_editor.analyze_transcript_and_segment(transcription, total_dur)
+                ai_data = ai_editor.analyze_transcript_and_segment(transcription, total_dur, cut_durs)
             except Exception as e:
                 log.warning("AI analysis failed for project %s: %s", project_id, e)
-                ai_data = ai_editor.get_fallback_segmentation(total_dur)
+                ai_data = ai_editor.get_fallback_segmentation(total_dur, cut_durs)
 
             segments_map = {
                 "hook": ai_data["hook"],
@@ -369,7 +370,7 @@ def sequential_queue_worker():
             if is_project_stopped(project_id):
                 raise RuntimeError("Project rendering was stopped by the user.")
 
-            # Step 3: standard cuts (5s / 15s / 30s / 60s) — 5% -> 55% overall
+            # Step 3: the configured standard cuts — 5% -> 55% overall
             processor.render_final_cuts(
                 project_id=project_id,
                 filename=filename,
@@ -379,6 +380,7 @@ def sequential_queue_worker():
                 segments_map=segments_map,
                 order=["Hook", "Demo", "CTA"],
                 progress_callback=make_progress_reporter(project_id, 5.0, 50.0),
+                durations=cut_durs,
             )
 
             t_cuts = time.time()
@@ -454,7 +456,7 @@ def variation_render_durations():
             val = int(part.strip())
         except ValueError:
             continue
-        if val in config.STANDARD_CUT_DURATIONS and val not in durations:
+        if val in config.ALLOWED_CUT_DURATIONS and val not in durations:
             durations.append(val)
     return sorted(durations) or [15, 30]
 
@@ -1899,6 +1901,8 @@ def get_system_settings():
         "audio_normalize": database.get_setting("audio_normalize", "1"),
         "whisper_language": database.get_setting("whisper_language", "auto"),
         "variation_durations": database.get_setting("variation_durations", "15,30"),
+        "cut_durations": database.get_setting("cut_durations", "5,15,30,60"),
+        "allowed_cut_durations": list(config.ALLOWED_CUT_DURATIONS),
         "agent_notes": agent_notes,
         "disk_usage": {
             "total_gb": round(total / (1024 ** 3), 2),
